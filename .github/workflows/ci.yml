@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main, dev]
+  pull_request:
+    branches: [master, main, dev]
+
+# 同一分支上的新提交自动取消旧任务，节省 CI 时长
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 2026-10 Node 安全公告的 24 线修复线；低于此版本不要跑 CI 或构建发布产物。
+  NODE_VERSION: 24.22.1
+
+jobs:
+  verify:
+    name: Lint · Format · Typecheck · Test · Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # 单元测试：纯函数内核（指纹 / PRNG / 驱动骨架 / 报告渲染）
+      - name: Unit tests
+        run: npm test
+
+      # 契约测试：适配器与治理实现必须满足的同一套行为约定。
+      # 这段是本项目的防退化核心——替身与真实实现不得有行为差异。
+      - name: Contract tests
+        run: npm run test:contract
+
+      - name: Production build
+        run: npm run build
+
+  # 端到端：verify 全绿不代表"Agent 真能跑完一局"。
+  # 这一段把被测游戏拉起来，让 Agent 真的走完一局并产出报告。
+  e2e:
+    name: Agent end-to-end (plays a real game)
+    runs-on: ubuntu-latest
+    needs: verify
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 被测游戏 othello-online 是平级仓库，CI 侧拉一份用于联调。
+      # 本地无需云端：它的 vite mockApiPlugin 在 dev/preview 下提供内存版 /api，
+      # 不依赖 EdgeOne 账号或 KV 绑定。
+      - name: Checkout game under test
+        uses: actions/checkout@v4
+        with:
+          repository: lark5480/othello-online
+          path: ../othello-online
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies (agent)
+        run: npm ci
+
+      - name: Install dependencies (game under test)
+        working-directory: ../othello-online
+        run: npm ci
+
+      - name: Build game under test
+        working-directory: ../othello-online
+        run: npm run build
+
+      - name: Start game under test
+        working-directory: ../othello-online
+        run: npm run preview -- --port 5173 &
+        env:
+          # 显式关掉自动打开浏览器，避免 CI 里挂起
+          BROWSER: none
+
+      - name: Wait for game under test
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5173/ >/dev/null; then
+              echo "game under test is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "game under test did not start"
+          exit 1
+
+      # 真的跑一局：产出 StepRecord 链与报告文件。
+      # 命令失败即失败——这里不接受"跑不起来但 CI 绿"。
+      - name: Run a full game
+        env:
+          GAME_BASE_URL: http://localhost:5173
+        run: npm run playtest -- --scenario smoke
+
+      - name: Upload playtest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playtest-report
+          path: reports/
+          retention-days: 7
