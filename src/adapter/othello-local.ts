@@ -154,6 +154,15 @@ export class OthelloLocalAdapter implements GameAdapter {
     const row = Number(params.action.payload["row"]);
     const col = Number(params.action.payload["col"]);
     const expectedUpdatedAt = this.updatedAtByRoom.get(roomId);
+    if (typeof expectedUpdatedAt !== "number") {
+      // 不静默跳过并发校验：othello 服务端的 expectedUpdatedAt 是可选的，
+      // 缺省时过期局面会被直接接受。缓存缺失说明调用方绕过了
+      // open / resume / observe，此时继续落子等于假装并发保护仍然有效。
+      throw new Error(
+        `othello 适配器缺少房间 ${roomId} 的版本戳缓存：` +
+          "act 前必须先 open / resume / observe 取得最新局面，否则无法发送 expectedUpdatedAt，服务端会跳过并发校验。",
+      );
+    }
 
     try {
       const res = await this.request<{ state: PublicState }>("POST", `/api/room/${roomId}/move`, {
@@ -164,12 +173,8 @@ export class OthelloLocalAdapter implements GameAdapter {
         // （`server/mockApi.ts` 与 `edge-functions/api/room/[roomId]/move.ts`
         //   都是 `typeof expectedUpdatedAt === 'number' && ...`）——
         //   不传就等于放弃并发保护，基于过期局面的落子会被静默接受。
-        //
-        // 本适配器**始终**带上它：Agent 要走的是真实客户端的严格路径，
-        // 否则"并发没问题"这个结论是假的。
-        ...(typeof expectedUpdatedAt === "number"
-          ? { expectedUpdatedAt }
-          : { __missingExpectedUpdatedAt: true }),
+        // 缓存缺失时已在上面显式抛错，不会走到这里。
+        expectedUpdatedAt,
       });
       return {
         ok: true,
