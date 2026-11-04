@@ -224,8 +224,10 @@ export function registerGovernanceContractFiltered(
   suiteName: string,
   options: {
     readonly includeInMemoryOnly?: boolean;
-    /** 整套跳过原因（被测系统不可达时）。 */
+    /** 整套跳过原因（被测系统不可达且**未强制**时）。 */
     readonly skip?: boolean | string;
+    /** 强制模式下依赖不可用时的前置检查：调用即失败，避免「依赖没起但 CI 绿」。 */
+    readonly precheck?: () => void;
   },
 ): void {
   for (const c of governanceContract()) {
@@ -234,6 +236,7 @@ export function registerGovernanceContractFiltered(
       continue;
     }
     test(`${suiteName} · ${c.name}`, { skip: options.skip ?? false }, async () => {
+      options.precheck?.();
       await c.fn(create());
     });
   }

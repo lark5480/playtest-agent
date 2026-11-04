@@ -18,24 +18,33 @@ import { ChessOracle } from "../../src/oracle/chess.js";
 import { CompositeOracle } from "../../src/oracle/composite.js";
 import { GenericOracle } from "../../src/oracle/generic.js";
 import { HeuristicStrategy } from "../../src/strategy/heuristic.js";
+import { integrationGate } from "../helpers/integration-gate.js";
 
 const BASE_URL = process.env.CHESS_ARENA_BASE_URL ?? "http://localhost:3000";
 
-async function chessArenaAvailable(): Promise<boolean> {
+async function chessArenaAvailable(): Promise<{ ok: boolean; reason: string }> {
   try {
     const res = await fetch(`${BASE_URL}/`, { signal: AbortSignal.timeout(3000) });
-    return res.ok;
-  } catch {
-    return false;
+    return res.ok
+      ? { ok: true, reason: "" }
+      : { ok: false, reason: `chess-arena 返回 HTTP ${res.status}（${BASE_URL}）` };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `chess-arena 不可达（${BASE_URL}）：${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
-const available = await chessArenaAvailable();
-const skip = available
-  ? false
-  : `chess-arena 不可用（先在其仓库执行 npm run dev，地址 ${BASE_URL}）`;
+const probe = await chessArenaAvailable();
+const gate = integrationGate({
+  dependency: "chess-arena",
+  available: probe.ok,
+  reason: probe.reason,
+});
 
-test("真实 chess-arena：能开局、走子并通过通用与象棋断言", { skip }, async () => {
+test("真实 chess-arena：能开局、走子并通过通用与象棋断言", { skip: gate.skip }, async () => {
+  gate.precheck?.();
   const result = await drive({
     adapter: new ChessArenaAdapter({ baseUrl: BASE_URL }),
     strategy: new HeuristicStrategy(),

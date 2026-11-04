@@ -124,3 +124,248 @@ jobs:
           name: playtest-report
           path: reports/
           retention-days: 7
+
+  # 真实集成：把两个被测游戏都拉起来，跑必须通过的集成用例。
+  # 依赖不可达在这里是失败，不是 skip —— PLAYTEST_REQUIRE_INTEGRATION=1 强制所有依赖必须真跑。
+  integration-games:
+    name: Integration · othello-online + chess-arena
+    runs-on: ubuntu-latest
+    needs: verify
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 两个被测游戏都是平级仓库；CI 侧各拉一份，只读消费，不改它们的源码。
+      - name: Checkout othello-online
+        uses: actions/checkout@v4
+        with:
+          repository: lark5480/othello-online
+          path: ../othello-online
+
+      - name: Checkout chess-arena
+        uses: actions/checkout@v4
+        with:
+          repository: lark5480/chess-arena
+          path: ../chess-arena
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies (agent)
+        run: npm ci
+
+      - name: Install dependencies (othello-online)
+        working-directory: ../othello-online
+        run: npm ci
+
+      - name: Install dependencies (chess-arena)
+        working-directory: ../chess-arena
+        run: npm ci
+
+      - name: Build othello-online
+        working-directory: ../othello-online
+        run: npm run build
+
+      - name: Build chess-arena
+        working-directory: ../chess-arena
+        run: npm run build
+
+      # 端口分开：othello-online 5173，chess-arena 3000，互不冲突。
+      - name: Start othello-online (5173)
+        working-directory: ../othello-online
+        run: npm run preview -- --port 5173 &
+        env:
+          BROWSER: none
+
+      - name: Start chess-arena (3000)
+        working-directory: ../chess-arena
+        run: npm start &
+
+      - name: Wait for games
+        run: |
+          for i in $(seq 1 30); do
+            othello=0; chess=0
+            curl -sf http://localhost:5173/ >/dev/null && othello=1
+            curl -sf http://localhost:3000/ >/dev/null && chess=1
+            if [ "$othello" = "1" ] && [ "$chess" = "1" ]; then
+              echo "both games are up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "games did not start (othello=$othello chess=$chess)"
+          exit 1
+
+      # 强制模式：任一条依赖不可达即失败，不允许 skip 兜绿。
+      # chess-arena 走子接口限流 60 次/分钟，集成用例固定只走 40 步，单窗口内不会触发 429。
+      - name: Integration tests (required)
+        env:
+          PLAYTEST_REQUIRE_INTEGRATION: "1"
+          GAME_BASE_URL: http://localhost:5173
+          CHESS_ARENA_BASE_URL: http://localhost:3000
+        run: npm run test:integration:games
+
+  # aiwarden 真实链路依赖 Java 21 + Maven + Docker（PG/Redis/Kafka/MinIO），
+  # 托管 runner 冷启动远超本 job 的 5 分钟预算，因此不在默认 CI 起它。
+  # 配了仓库变量 AIWARDEN_BASE_URL 时本 job 才运行；一旦运行就是强制模式、失败即红。
+  integration-aiwarden:
+    name: Integration · aiwarden (external)
+    runs-on: ubuntu-latest
+    needs: verify
+    if: ${{ vars.AIWARDEN_BASE_URL != '' }}
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Integration tests (required)
+        env:
+          PLAYTEST_REQUIRE_INTEGRATION: "1"
+          AIWARDEN_BASE_URL: ${{ vars.AIWARDEN_BASE_URL }}
+        run: npm run test:integration:aiwarden
+
+  # tongshi-ju 是答题类应用，没有"轮次/对手"语义，因此不接 GameAdapter，
+  # 只做两层验证：HTTP 契约（本 job）与浏览器 e2e（下一个 job）。
+  # 拆成两个 job 的理由：
+  #   1) e2e 要装浏览器、跑 5 个 spec，耗时与失败原因都和契约测试不同；
+  #   2) tongshi 的建房限流是 10 次/分钟/IP，分进程后两套用例各自计数，不会互撞。
+  # 端口统一 3100：避开 chess-arena 的 3000 与 othello-online 的 5173。
+  integration-tongshi:
+    name: Integration · tongshi-ju duel (HTTP contract)
+    runs-on: ubuntu-latest
+    needs: verify
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 被测应用是平级仓库，只读消费，不改它的源码或 spec。
+      - name: Checkout tongshi-ju
+        uses: actions/checkout@v4
+        with:
+          repository: lark5480/tongshi-ju
+          path: ../tongshi-ju
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies (agent)
+        run: npm ci
+
+      - name: Install dependencies (tongshi-ju)
+        working-directory: ../tongshi-ju
+        run: npm ci
+
+      - name: Build tongshi-ju
+        working-directory: ../tongshi-ju
+        run: npm run build
+
+      - name: Start tongshi-ju (3100)
+        working-directory: ../tongshi-ju
+        run: PORT=3100 npm start &
+        env:
+          BROWSER: none
+
+      - name: Wait for tongshi-ju
+        run: |
+          for i in $(seq 1 45); do
+            if curl -sf http://localhost:3100/ >/dev/null; then
+              echo "tongshi-ju is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "tongshi-ju did not start"
+          exit 1
+
+      # 强制模式：依赖不可达即失败，不允许 skip 兜绿。
+      - name: Duel HTTP contract tests (required)
+        env:
+          PLAYTEST_REQUIRE_INTEGRATION: "1"
+          TONGSHI_JU_BASE_URL: http://localhost:3100
+          TONGSHI_JU_DIR: ../tongshi-ju
+        run: npm run test:integration:tongshi
+
+  # 复用 tongshi-ju 自带的 Playwright 套件（actor 侧不引入 Playwright 依赖）。
+  # duel.spec.ts 自带 420s 超时，因此 job 单独给 15 分钟，不靠放宽掩盖。
+  # 注意：playwright.config.ts 里 `reuseExistingServer: !process.env.CI`，
+  # CI 模式会再起一个 dev server 撞 3100，所以这一步显式清空 CI，
+  # 让 Playwright 复用上面已经启动的 next start 实例。
+  e2e-tongshi:
+    name: E2E · tongshi-ju (Playwright)
+    runs-on: ubuntu-latest
+    needs: verify
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout tongshi-ju
+        uses: actions/checkout@v4
+        with:
+          repository: lark5480/tongshi-ju
+          path: ../tongshi-ju
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies (tongshi-ju)
+        working-directory: ../tongshi-ju
+        run: npm ci
+
+      - name: Build tongshi-ju
+        working-directory: ../tongshi-ju
+        run: npm run build
+
+      - name: Start tongshi-ju (3100)
+        working-directory: ../tongshi-ju
+        run: PORT=3100 npm start &
+        env:
+          BROWSER: none
+
+      - name: Wait for tongshi-ju
+        run: |
+          for i in $(seq 1 45); do
+            if curl -sf http://localhost:3100/ >/dev/null; then
+              echo "tongshi-ju is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "tongshi-ju did not start"
+          exit 1
+
+      - name: Install Playwright browser
+        working-directory: ../tongshi-ju
+        run: npx playwright install --with-deps chromium
+
+      # 失败即红：不跳过、不重试兜底。4+1 分轨若未同步 daily.spec.ts 的断言，
+      # 这里会如实变红（属于被测仓库的口径问题，不在 agent 侧放宽）。
+      - name: Run Playwright suites
+        working-directory: ../tongshi-ju
+        env:
+          CI: ""
+        run: npx playwright test

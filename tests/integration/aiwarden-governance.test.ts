@@ -17,6 +17,7 @@
 
 import { AiwardenHttpClient } from "../../src/governance/aiwarden-client.js";
 import { registerGovernanceContractFiltered } from "../contract/governance.contract.js";
+import { integrationGate } from "../helpers/integration-gate.js";
 
 const BASE_URL = process.env.AIWARDEN_BASE_URL ?? "http://localhost:8080";
 const TOOL = process.env.AIWARDEN_TOOL ?? "create_ticket";
@@ -62,7 +63,11 @@ async function aiwardenAvailable(): Promise<{ ok: boolean; reason: string }> {
 }
 
 const probe = await aiwardenAvailable();
-const skip = probe.ok ? false : probe.reason;
+const gate = integrationGate({
+  dependency: "aiwarden",
+  available: probe.ok,
+  reason: probe.reason,
+});
 
 // 真实客户端：工具名与契约套件里的调用保持一致。
 const createClient = () =>
@@ -73,12 +78,9 @@ const createClient = () =>
     userId: USER_ID,
   });
 
-if (!probe.ok) {
-  console.log(`[集成] 跳过真实 aiwarden 契约：${probe.reason}`);
-}
-
 // 真实实现不返回 traceId（它属于 session 层）→ 那条用例标记为不适用。
 registerGovernanceContractFiltered(createClient, "真实 aiwarden 契约", {
   includeInMemoryOnly: false,
-  skip,
+  skip: gate.skip,
+  precheck: gate.precheck,
 });

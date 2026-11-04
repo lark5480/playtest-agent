@@ -17,10 +17,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { OthelloLocalAdapter } from "../../src/adapter/othello-local.js";
+import { integrationGate } from "../helpers/integration-gate.js";
 
 const BASE_URL = process.env.GAME_BASE_URL ?? "http://localhost:5173";
 
-async function gameAvailable(): Promise<boolean> {
+async function gameAvailable(): Promise<{ ok: boolean; reason: string }> {
   try {
     const res = await fetch(`${BASE_URL}/api/room/create`, {
       method: "POST",
@@ -28,14 +29,23 @@ async function gameAvailable(): Promise<boolean> {
       body: JSON.stringify({ playerId: "probe" }),
       signal: AbortSignal.timeout(3000),
     });
-    return res.ok;
-  } catch {
-    return false;
+    return res.ok
+      ? { ok: true, reason: "" }
+      : { ok: false, reason: `othello-online 返回 HTTP ${res.status}（${BASE_URL}）` };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `othello-online 不可达（${BASE_URL}）：${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
-const available = await gameAvailable();
-const skip = available ? false : "被测游戏不可用（先起 othello-online 的 preview）";
+const probe = await gameAvailable();
+const gate = integrationGate({
+  dependency: "othello-online",
+  available: probe.ok,
+  reason: probe.reason,
+});
 
 /**
  * 造一个"两个客户端进同一房间"的场景。
@@ -62,7 +72,8 @@ async function sameRoomPair(): Promise<{
   };
 }
 
-test("并发落子：同一房间两个客户端同时落子，必须恰好一个被接受", { skip }, async () => {
+test("并发落子：同一房间两个客户端同时落子，必须恰好一个被接受", { skip: gate.skip }, async () => {
+  gate.precheck?.();
   const { a, b } = await sameRoomPair();
 
   const obsA = await a.adapter.observe({
@@ -101,7 +112,8 @@ test("并发落子：同一房间两个客户端同时落子，必须恰好一�
   }
 });
 
-test("串行落子：同一房间第二个客户端用过期局面落子 → 409 冲突", { skip }, async () => {
+test("串行落子：同一房间第二个客户端用过期局面落子 → 409 冲突", { skip: gate.skip }, async () => {
+  gate.precheck?.();
   const { a, b } = await sameRoomPair();
 
   const obsA = await a.adapter.observe({

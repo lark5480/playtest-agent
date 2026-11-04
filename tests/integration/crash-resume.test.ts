@@ -22,11 +22,12 @@ import { drive, InjectedCrash } from "../../src/driver/game-driver.js";
 import { InMemoryGovernanceClient } from "../../src/governance/client.js";
 import { GenericOracle } from "../../src/oracle/generic.js";
 import { HeuristicStrategy } from "../../src/strategy/heuristic.js";
+import { integrationGate } from "../helpers/integration-gate.js";
 
 const BASE_URL = process.env.GAME_BASE_URL ?? "http://localhost:5173";
 
-/** 探测被测游戏是否可用；不可用则跳过相关用例。 */
-async function gameAvailable(): Promise<boolean> {
+/** 探测被测游戏是否可用；不可用时的跳过/失败由 integrationGate 统一决定。 */
+async function gameAvailable(): Promise<{ ok: boolean; reason: string }> {
   try {
     const res = await fetch(`${BASE_URL}/api/room/create`, {
       method: "POST",
@@ -34,16 +35,26 @@ async function gameAvailable(): Promise<boolean> {
       body: JSON.stringify({ playerId: "probe" }),
       signal: AbortSignal.timeout(3000),
     });
-    return res.ok;
-  } catch {
-    return false;
+    return res.ok
+      ? { ok: true, reason: "" }
+      : { ok: false, reason: `othello-online 返回 HTTP ${res.status}（${BASE_URL}）` };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `othello-online 不可达（${BASE_URL}）：${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
-const available = await gameAvailable();
-const skip = available ? false : "被测游戏不可用（先起 othello-online 的 preview）";
+const probe = await gameAvailable();
+const gate = integrationGate({
+  dependency: "othello-online",
+  available: probe.ok,
+  reason: probe.reason,
+});
 
-test("崩溃续跑：动作总数与未崩溃基线逐项相等", { skip }, async () => {
+test("崩溃续跑：动作总数与未崩溃基线逐项相等", { skip: gate.skip }, async () => {
+  gate.precheck?.();
   const seed = 2026;
   const crashAfter = 10;
 
