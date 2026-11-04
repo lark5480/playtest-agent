@@ -40,13 +40,21 @@
 ```bash
 npm install
 
-# 起被测游戏（本地，免云端 —— othello-online 自带内存版 /api，无需 EdgeOne 账号或 KV）
+# 被测游戏 A：othello-online（自带内存版 /api，无需 EdgeOne 账号或 KV）
 cd ../othello-online && npm install && npm run build && npm run preview
 # 另开一个终端：
 cd playtest-agent
-
 npm run playtest -- --scenario smoke
+
+# 被测游戏 B：chess-arena（Next.js 自带内存房间 API，默认 localhost:3000）
+cd ../chess-arena && npm install && npm run dev
+# 另开一个终端：
+cd playtest-agent
+npm run playtest -- --scenario chess
 ```
+
+> PowerShell 会把裸 `--` 当自己的参数分隔符吃掉；在 PowerShell 里请写成
+> `npm run playtest '--' --scenario chess`。cmd / bash 不受影响。
 
 跑完后看 `reports/` 下的 Markdown 与 JSON 报告（运行产物，不入库）。
 报告格式样例见 [`docs/sample-report.md`](docs/sample-report.md)。
@@ -60,7 +68,8 @@ npm run typecheck        # tsc --noEmit
 npm test                 # 单元测试（纯函数内核）
 npm run test:contract    # 契约测试（适配器 / 治理实现必过）
 npm run test:integration # 集成测试
-npm run playtest -- --scenario smoke   # 跑一局
+npm run playtest -- --scenario smoke   # 跑 othello 一整局
+npm run playtest -- --scenario chess   # 跑 chess-arena（默认 localhost:3000）
 npm run lint && npm run format:check
 npm run build
 ```
@@ -105,11 +114,42 @@ $ npm run playtest -- --scenario smoke --seed=99
 
 ### 测试结果
 
-| 层   | 用例数 | 通过 | 说明                                                                                         |
-| ---- | ------ | ---- | -------------------------------------------------------------------------------------------- |
-| 单元 | 59     | 59   | 纯函数内核（指纹 / PRNG / 驱动骨架 / 报告 / 策略 / Oracle）                                  |
-| 契约 | 8      | 8    | 治理实现的幂等语义（替身与真实实现同套件）                                                   |
-| 集成 | 11     | 7    | 崩溃续跑 + 并发冲突 + **真实 aiwarden 链路 7 条实跑**；1 条不适用 + 3 条被测游戏不可达时跳过 |
+| 层   | 用例数 | 通过   | 说明                                                                                                                |
+| ---- | ------ | ------ | ------------------------------------------------------------------------------------------------------------------- |
+| 单元 | 80     | 80     | 纯函数内核（指纹 / PRNG / 驱动骨架 / 报告 / 策略 / Oracle / 国际象棋规则 / 429 重试）                               |
+| 契约 | 15     | 15     | 治理幂等 8 条 + **chess-arena 适配器 7 条**（本地 HTTP 假服务，不依赖真实进程）                                     |
+| 集成 | 12     | 视依赖 | 真实 aiwarden 7 条 + 真实 chess-arena 1 条 + othello 崩溃/并发 3 条 + traceId 不适用 1 条；依赖不可达时逐条显式跳过 |
+
+### 集成测试的跳过条件（逐条打印原因，不伪装通过）
+
+| 套件                          | 依赖（默认地址）                         | 不可达时的行为                                                |
+| ----------------------------- | ---------------------------------------- | ------------------------------------------------------------- |
+| `aiwarden-governance.test.ts` | aiwarden，`localhost:8080`               | 7 条跳过并打印「aiwarden 不可达」；traceId 那条恒为「不适用」 |
+| `chess-arena.test.ts`         | chess-arena，`localhost:3000`            | 1 条跳过并打印「先在其仓库执行 npm run dev」                  |
+| `concurrency.test.ts`         | othello-online preview，`localhost:5173` | 2 条跳过并打印「被测游戏不可用」                              |
+| `crash-resume.test.ts`        | othello-online preview，`localhost:5173` | 1 条跳过并打印「被测游戏不可用」                              |
+
+### 第二游戏适配：chess-arena（2026-11-04 实跑）
+
+```console
+$ npm run playtest '--' --scenario chess
+[playtest] 场景=chess seed=42 被测=http://localhost:3000 模型=未配置（走确定性基线） 治理=in-memory（降级） 注入=无
+[playtest] 治理降级：aiwarden 不可达（fetch failed），已降级到内存治理替身
+[playtest] 完成：passed · 60 步 · 降级 60 · 重放 0 · 发现 0
+```
+
+真实集成测试（服务可达时）：
+
+```console
+$ node --import tsx --test tests/integration/chess-arena.test.ts
+✔ 真实 chess-arena：能开局、走子并通过通用与象棋断言
+ℹ tests 1  ℹ pass 1  ℹ fail 0  ℹ skipped 0
+```
+
+这是「通用测试工具」定位的证据：同一个驱动循环、治理与报告，只换适配器与游戏特异 Oracle。
+本次 60 步止于场景上限（`chess-arena` 走子接口按 IP 限流 60 次/分钟）；报告状态 `passed`
+只代表「末步生效且无断言失败」，不代表整局终局。连续跑多局撞上限时，适配器会等待一个
+滑动窗口（约 61 秒）后重试一次，不把 429 当成游戏缺陷。
 
 ### 真实 aiwarden 治理链路：已实跑（2026-11-04）
 
@@ -146,10 +186,11 @@ $ AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm run test:integration
 
 ### 仍然存在的边界（如实记录）
 
-| 边界                            | 原因                                                   | 处置                                                     |
-| ------------------------------- | ------------------------------------------------------ | -------------------------------------------------------- |
-| aiwarden 侧**没有游戏动作工具** | 实测注册的是 `assign_ticket` / `create_ticket`         | 用 `create_ticket` 作替身验证整条管道；**不改 aiwarden** |
-| 单次工具调用**不返回 traceId**  | `ToolInvokeResponse` 无该字段（traceId 属 session 层） | 契约该条标「不适用」并注明原因，而非删断言               |
+| 边界                                | 原因                                                   | 处置                                                     |
+| ----------------------------------- | ------------------------------------------------------ | -------------------------------------------------------- |
+| aiwarden 侧**没有游戏动作工具**     | 实测注册的是 `assign_ticket` / `create_ticket`         | 用 `create_ticket` 作替身验证整条管道；**不改 aiwarden** |
+| 单次工具调用**不返回 traceId**      | `ToolInvokeResponse` 无该字段（traceId 属 session 层） | 契约该条标「不适用」并注明原因，而非删断言               |
+| chess-arena 走子**限流 60 次/分钟** | 游戏侧按 IP 的固定窗口限流                             | chess 场景上限设为 60 步；不绕过限流、不改被测仓库       |
 
 ### 关于"发现真实缺陷"的诚实结论
 

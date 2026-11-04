@@ -10,11 +10,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { ChessArenaAdapter } from "./adapter/chess-arena.js";
 import { OthelloLocalAdapter } from "./adapter/othello-local.js";
 import { buildReportJson, renderReportMarkdown } from "./core/report-core.js";
 import { drive, InjectedCrash } from "./driver/game-driver.js";
 import { setupGovernance } from "./governance/setup.js";
 import { clientFromEnv } from "./llm/openai-client.js";
+import { ChessOracle } from "./oracle/chess.js";
 import { CompositeOracle } from "./oracle/composite.js";
 import { GenericOracle } from "./oracle/generic.js";
 import { OthelloOracle } from "./oracle/othello.js";
@@ -77,7 +79,6 @@ async function main(): Promise<number> {
 
   const scenarioName = args.get("scenario") ?? "smoke";
   const seed = Number(args.get("seed") ?? 42);
-  const gameUrl = args.get("game-url") ?? process.env.GAME_BASE_URL ?? "http://localhost:5173";
   const injectAfter = args.get("inject-crash");
 
   const scenarios = loadScenarios();
@@ -89,9 +90,17 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  const adapter = new OthelloLocalAdapter({ baseUrl: gameUrl });
+  const defaultGameUrl =
+    scenario.game === "chess" ? "http://localhost:3000" : "http://localhost:5173";
+  const gameUrl = args.get("game-url") ?? process.env.GAME_BASE_URL ?? defaultGameUrl;
+
+  const adapter =
+    scenario.game === "chess"
+      ? new ChessArenaAdapter({ baseUrl: gameUrl })
+      : new OthelloLocalAdapter({ baseUrl: gameUrl });
   // 通用断言 + 游戏特异断言（特异断言独立实现，不复用游戏的规则代码）
-  const oracle = new CompositeOracle([new GenericOracle(), new OthelloOracle()]);
+  const gameOracle = scenario.game === "chess" ? new ChessOracle() : new OthelloOracle();
+  const oracle = new CompositeOracle([new GenericOracle(), gameOracle]);
 
   // 治理接入：优先真实 aiwarden，不可达则**显式**降级到内存替身。
   const governanceSetup = await setupGovernance({

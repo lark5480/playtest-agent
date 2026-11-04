@@ -139,7 +139,7 @@ isTerminal(state) = state.status === "finished"
 | aiwarden 真实 HTTP 客户端 | **已实现**（`src/governance/aiwarden-client.ts`）；aiwarden 不可达时**显式降级**到内存替身                                         |
 | aiwarden 侧游戏动作工具   | **没有**（实测注册的是 `assign_ticket` / `create_ticket`）；本项目**用 `create_ticket` 作替身**验证整条治理管道，**不改 aiwarden** |
 | 单次工具调用的 traceId    | **真实实现不提供**（`ToolInvokeResponse` 无该字段；traceId 属于 session 层）→ 治理契约中该条标为「不适用」                         |
-| 被测游戏                  | othello-online（本地 mock API，零云端依赖）；chess-arena 适配器延后                                                                |
+| 被测游戏                  | othello-online（本地 mock API）；chess-arena（本地内存房间 API，默认 `localhost:3000`）—— 均零云端依赖                             |
 
 ---
 
