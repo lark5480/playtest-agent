@@ -4,8 +4,12 @@
  * 为什么自实现：本项目**不新增运行时依赖**（AGENTS 红线 2.5），
  * 且 Oracle / 适配器必须独立于被测实现（不复用 chess-arena 的 chess.js）。
  *
- * 覆盖范围：走子生成、将军/将死/逼和、王车易位、吃过路兵、升变、FEN 编解码。
- * 不覆盖：三次重复与 50 步等依赖历史的规则 —— 这些交给被测游戏的状态字段。
+ * 覆盖范围：走子生成、将军/将死/逼和、王车易位、吃过路兵、升变、FEN 编解码、
+ * 依赖对局历史的三次重复与 50 步和棋判定（`analyzeHistory`）。
+ *
+ * 关于"连续 60 步将军"：FIDE 规则里**没有**这条。长将（perpetual check）由
+ * 三次重复（9.2）或 50 步（9.3）终结，另有五次重复（9.6.1）与 75 步（9.6.2）
+ * 的自动和棋上限 —— 判据都是"局面重复 / 半回合数"，不是"将军次数"。
  */
 
 export type ChessColor = "w" | "b";
@@ -194,6 +198,58 @@ export function positionToFen(position: ChessPosition): string {
     String(position.halfmove),
     String(position.fullmove),
   ].join(" ");
+}
+
+/**
+ * 局面重复键：棋盘 + 执子方 + 易位权 + 吃过路兵权。
+ *
+ * **故意不含**半回合计数与回合数 —— FIDE 9.2 只按"可行动的局面"判重复。
+ * ep 字段在我们自己的 FEN 里已经是"只有真能吃过路兵时才写"，
+ * 因此直接截取 FEN 前四段即可（与 chess.js 的哈希口径一致）。
+ */
+export function repetitionKey(position: ChessPosition): string {
+  return positionToFen(position).split(" ").slice(0, 4).join(" ");
+}
+
+export interface HistoryDrawState {
+  /** 当前局面在历史中出现的次数（含当前）。 */
+  readonly repetitionCount: number;
+  /** 当前局面的半回合数（无吃子、无兵动的连续半回合）。 */
+  readonly halfmoveClock: number;
+  readonly threefold: boolean;
+  readonly fiftyMove: boolean;
+  /** 本地判定的和棋原因；两种都成立时按三次重复优先（与服务端判定顺序一致）。 */
+  readonly reason: "threefold" | "fifty" | null;
+}
+
+/**
+ * 基于 FEN 历史（按时间顺序，**含当前局面**）独立判定历史型和棋。
+ *
+ * 不从服务端 `winner` / `result` 读任何信息：重复次数与半回合数都从历史重算。
+ * 调用方负责保证 FEN 合法；历史为空属于调用错误。
+ */
+export function analyzeHistory(fenHistory: readonly string[]): HistoryDrawState {
+  if (fenHistory.length === 0) throw new Error("历史为空，无法判定历史型和棋");
+
+  const current = parseFen(fenHistory[fenHistory.length - 1]!);
+  const key = repetitionKey(current);
+
+  let repetitionCount = 0;
+  for (const fen of fenHistory) {
+    if (repetitionKey(parseFen(fen)) === key) repetitionCount += 1;
+  }
+
+  const halfmoveClock = current.halfmove;
+  const threefold = repetitionCount >= 3;
+  const fiftyMove = halfmoveClock >= 100;
+
+  return {
+    repetitionCount,
+    halfmoveClock,
+    threefold,
+    fiftyMove,
+    reason: threefold ? "threefold" : fiftyMove ? "fifty" : null,
+  };
 }
 
 /** 初始局面。 */

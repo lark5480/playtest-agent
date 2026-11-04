@@ -12,11 +12,20 @@
  * - CHS5 终局结果必须与棋盘事实一致（将死/逼和/认输/超时）
  * - CHS6 playing 状态不得无合法着（否则对局卡死）
  * - CHS7 走子历史长度必须与 moveCount 一致
+ * - CHS8 服务端判 threefold 时，本地历史必须真出现 3 次同一局面
+ * - CHS9 服务端判 fifty 时，本地半回合数必须真的达到 100
+ * - CHS10 本地历史已判和，服务端却仍在 playing → 漏判
+ * - CHS11 和棋原因与"棋盘实际将死"冲突（将死优先于历史型和棋）
+ *
+ * 关于"连续 60 步将军"：FIDE 没有这条规则，长将由三次重复 / 50 步覆盖，
+ * 因此本 Oracle **不设**以"将军次数"为判据的断言。
  */
 
 import {
+  analyzeHistory,
   applyMove,
   generateLegalMoves,
+  isCheckmate,
   isInCheck,
   moveId,
   parseFen,
@@ -151,6 +160,40 @@ export class ChessOracle implements Oracle {
       });
     }
 
+    // CHS8–CHS10：历史型和棋必须由本地 FEN 历史独立复核
+    const fenHistory = fenHistoryOf(after);
+    if (fenHistory) {
+      const local = analyzeHistory(fenHistory);
+      const reason = resultOf(after)?.reason ?? "";
+
+      if (reason === "threefold" && !local.threefold) {
+        violations.push({
+          code: "CHS8-threefold-without-repetition",
+          severity: "fatal",
+          message: `result.reason 为 threefold，但本地历史只出现 ${local.repetitionCount} 次同一局面（需 3 次）`,
+          stepNo: null,
+        });
+      }
+
+      if (reason === "fifty" && !local.fiftyMove) {
+        violations.push({
+          code: "CHS9-fifty-move-clock-below-100",
+          severity: "fatal",
+          message: `result.reason 为 fifty，但本地半回合数只有 ${local.halfmoveClock}（需 100）`,
+          stepNo: null,
+        });
+      }
+
+      if (after.state.status === "playing" && local.reason !== null) {
+        violations.push({
+          code: "CHS10-history-draw-missed",
+          severity: "fatal",
+          message: `本地历史已判定${local.reason}（重复 ${local.repetitionCount} 次 / 半回合 ${local.halfmoveClock}），服务端仍报 playing`,
+          stepNo: null,
+        });
+      }
+    }
+
     return violations;
   }
 
@@ -239,6 +282,15 @@ export class ChessOracle implements Oracle {
             stepNo: null,
           });
         }
+        // CHS11：将死优先于一切历史型和棋，棋盘事实上已无合法着且被将军时不能判和
+        if (isCheckmate(board)) {
+          violations.push({
+            code: "CHS11-draw-vs-checkmate",
+            severity: "fatal",
+            message: `result.reason 为 ${reason}，但棋盘事实是将死 —— 将死应立即终局，不能被历史型和棋覆盖`,
+            stepNo: null,
+          });
+        }
         break;
       default:
         break;
@@ -259,6 +311,13 @@ function movesOf(observation: Observation): readonly string[] | null {
   const raw = observation.state.payload["moves"];
   if (!Array.isArray(raw)) return null;
   return raw.filter((item): item is string => typeof item === "string");
+}
+
+function fenHistoryOf(observation: Observation): readonly string[] | null {
+  const raw = observation.state.payload["fenHistory"];
+  if (!Array.isArray(raw)) return null;
+  const list = raw.filter((item): item is string => typeof item === "string");
+  return list.length > 0 ? list : null;
 }
 
 function resultOf(

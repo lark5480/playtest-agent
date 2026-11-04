@@ -10,17 +10,31 @@
  * 与 othello 适配器的同一条原则：合法着在本地独立计算，
  * 不复用被测游戏的 chess.js（见 `src/core/chess-rules.ts`）。
  *
- * 已知边界：move 接口按 IP 限流 60 次/分钟；超长对局可能触发 429，
- * 适配器会把它作为失败上报，不静默重试掩盖。
+ * 终局判定：将死/逼和来自服务端与本地推演；**三次重复与 50 步由本地 FEN 历史
+ * 独立判定**（`analyzeHistory`），服务端没判出来时由适配器补上，不依赖它的 `winner`。
+ *
+ * 已知边界：move 接口按 IP 限流 60 次/分钟；撞上 429 时等待一个窗口后重试一次，
+ * 429 明确表示动作未处理，重试是遵守限流而不是绕过。
  */
 
-import { generateLegalMoves, moveId, parseFen, squareName } from "../core/chess-rules.js";
+import {
+  analyzeHistory,
+  generateLegalMoves,
+  moveId,
+  parseFen,
+  positionToFen,
+  squareName,
+  startPosition,
+} from "../core/chess-rules.js";
 import type { Action, GameState, Observation } from "../types/game.js";
 
 import type { GameAdapter } from "./game-adapter.js";
 
 type ArenaColor = "white" | "black";
 type ArenaStatus = "waiting" | "playing" | "finished";
+
+/** chess-arena 的新房间总是从标准初始局面开始，用它作为历史的第一项。 */
+const START_FEN = positionToFen(startPosition());
 
 interface ArenaMove {
   moveNumber: number;
@@ -168,6 +182,7 @@ export class ChessArenaAdapter implements GameAdapter {
       }
 
       const moves = this.readMoves(params.state).concat(res.move.san);
+      const fenHistory = this.readFenHistory(params.state).concat(res.fen);
       return {
         ok: true,
         observation: {
@@ -177,6 +192,7 @@ export class ChessArenaAdapter implements GameAdapter {
             turn: res.turn,
             status: res.gameOver ? "finished" : "playing",
             moves,
+            fenHistory,
             result: res.result ?? null,
           }),
           seq: Number(params.state.payload["seq"] ?? 0) + 1,
@@ -204,6 +220,8 @@ export class ChessArenaAdapter implements GameAdapter {
       turn: room.turn,
       status,
       moves: room.moves.map((move) => move.san),
+      // 历史第一项是初始局面，之后每一步的 FEN 都来自服务端，但判定在本地做。
+      fenHistory: [START_FEN, ...room.moves.map((move) => move.fen)],
       result: room.result ?? null,
     });
   }
@@ -214,21 +232,35 @@ export class ChessArenaAdapter implements GameAdapter {
     readonly turn: ArenaColor;
     readonly status: ArenaStatus;
     readonly moves: readonly string[];
+    readonly fenHistory: readonly string[];
     readonly result: ArenaResult | null;
   }): GameState {
-    const finished = params.status === "finished";
-    const legalActions = finished ? [] : this.computeLegalActions(params.fen);
+    let status: ArenaStatus = params.status;
+    let result = params.result;
+    let legalActions = status === "finished" ? [] : this.computeLegalActions(params.fen);
+
+    // 历史型和棋：本地独立判定。棋盘仍有合法着时，三次重复 / 50 步直接终局；
+    // 无合法着时交给将死/逼和语义，不在这里抢判。
+    if (status !== "finished" && legalActions.length > 0) {
+      const history = analyzeHistory(params.fenHistory);
+      if (history.reason !== null) {
+        status = "finished";
+        result = { winner: null, reason: history.reason };
+        legalActions = [];
+      }
+    }
 
     return {
       id: params.code,
-      status: params.status,
-      turn: finished ? null : params.turn,
+      status,
+      turn: status === "finished" ? null : params.turn,
       legalActions,
       payload: {
         fen: params.fen,
         moveCount: params.moves.length,
         moves: [...params.moves],
-        result: params.result,
+        fenHistory: [...params.fenHistory],
+        result,
         seq: params.moves.length,
       },
     };
@@ -250,6 +282,17 @@ export class ChessArenaAdapter implements GameAdapter {
   private readMoves(state: GameState): string[] {
     const raw = state.payload["moves"];
     return Array.isArray(raw) ? raw.filter((item): item is string => typeof item === "string") : [];
+  }
+
+  /** 读上一步留下的 FEN 历史；缺失时退回当前局面（仍能判 50 步，但判不了重复）。 */
+  private readFenHistory(state: GameState): string[] {
+    const raw = state.payload["fenHistory"];
+    if (Array.isArray(raw)) {
+      const list = raw.filter((item): item is string => typeof item === "string");
+      if (list.length > 0) return list;
+    }
+    const fen = state.payload["fen"];
+    return [typeof fen === "string" ? fen : START_FEN];
   }
 
   private parseToken(token: string): { code: string; whiteId: string; blackId: string } {

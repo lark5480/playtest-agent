@@ -95,6 +95,31 @@ test("isTerminal：正常开局不是终局", async () => {
   assert.equal(client.isTerminal({ state }), false);
 });
 
+test("三次重复：服务端仍报 playing，适配器按本地历史判为和棋", async () => {
+  // 假服务只判将死/逼和，不判历史型和棋 —— 正好用来验证本地判定真的参与了终局。
+  const client = adapter();
+  const { state, token } = await client.open({ seed: 8 });
+  let current = state;
+
+  const shuffle = ["g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1", "f6g8"];
+  for (const id of shuffle) {
+    const action = current.legalActions.find((candidate) => candidate.id === id);
+    assert.ok(action, `缺少合法着 ${id}`);
+    const result = await client.act({ state: current, token, action });
+    assert.equal(result.ok, true, result.error);
+    current = result.observation!.state;
+  }
+
+  assert.equal(current.status, "finished");
+  assert.equal(current.turn, null);
+  assert.equal(current.legalActions.length, 0);
+  assert.deepEqual(current.payload["result"], { winner: null, reason: "threefold" });
+  assert.equal(client.isTerminal({ state: current }), true);
+
+  const history = current.payload["fenHistory"];
+  assert.ok(Array.isArray(history) && history.length === 9, "历史应含初始局面 + 8 步");
+});
+
 test("token 中的玩家凭证不出现在状态里", async () => {
   const client = adapter();
   const { state, token } = await client.open({ seed: 6 });
