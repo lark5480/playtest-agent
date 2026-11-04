@@ -72,7 +72,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: lark5480/othello-online
-          path: ../othello-online
+          path: othello-online
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -84,15 +84,15 @@ jobs:
         run: npm ci
 
       - name: Install dependencies (game under test)
-        working-directory: ../othello-online
+        working-directory: othello-online
         run: npm ci
 
       - name: Build game under test
-        working-directory: ../othello-online
+        working-directory: othello-online
         run: npm run build
 
       - name: Start game under test
-        working-directory: ../othello-online
+        working-directory: othello-online
         run: npm run preview -- --port 5173 &
         env:
           # 显式关掉自动打开浏览器，避免 CI 里挂起
@@ -142,13 +142,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: lark5480/othello-online
-          path: ../othello-online
+          path: othello-online
 
       - name: Checkout chess-arena
         uses: actions/checkout@v4
         with:
           repository: lark5480/chess-arena
-          path: ../chess-arena
+          path: chess-arena
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -160,30 +160,30 @@ jobs:
         run: npm ci
 
       - name: Install dependencies (othello-online)
-        working-directory: ../othello-online
+        working-directory: othello-online
         run: npm ci
 
       - name: Install dependencies (chess-arena)
-        working-directory: ../chess-arena
+        working-directory: chess-arena
         run: npm ci
 
       - name: Build othello-online
-        working-directory: ../othello-online
+        working-directory: othello-online
         run: npm run build
 
       - name: Build chess-arena
-        working-directory: ../chess-arena
+        working-directory: chess-arena
         run: npm run build
 
       # 端口分开：othello-online 5173，chess-arena 3000，互不冲突。
       - name: Start othello-online (5173)
-        working-directory: ../othello-online
+        working-directory: othello-online
         run: npm run preview -- --port 5173 &
         env:
           BROWSER: none
 
       - name: Start chess-arena (3000)
-        working-directory: ../chess-arena
+        working-directory: chess-arena
         run: npm start &
 
       - name: Wait for games
@@ -260,7 +260,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: lark5480/tongshi-ju
-          path: ../tongshi-ju
+          path: tongshi-ju
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -272,15 +272,15 @@ jobs:
         run: npm ci
 
       - name: Install dependencies (tongshi-ju)
-        working-directory: ../tongshi-ju
+        working-directory: tongshi-ju
         run: npm ci
 
       - name: Build tongshi-ju
-        working-directory: ../tongshi-ju
+        working-directory: tongshi-ju
         run: npm run build
 
       - name: Start tongshi-ju (3100)
-        working-directory: ../tongshi-ju
+        working-directory: tongshi-ju
         run: PORT=3100 npm start &
         env:
           BROWSER: none
@@ -302,7 +302,7 @@ jobs:
         env:
           PLAYTEST_REQUIRE_INTEGRATION: "1"
           TONGSHI_JU_BASE_URL: http://localhost:3100
-          TONGSHI_JU_DIR: ../tongshi-ju
+          TONGSHI_JU_DIR: tongshi-ju
         run: npm run test:integration:tongshi
 
   # 复用 tongshi-ju 自带的 Playwright 套件（actor 侧不引入 Playwright 依赖）。
@@ -324,7 +324,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: lark5480/tongshi-ju
-          path: ../tongshi-ju
+          path: tongshi-ju
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -333,15 +333,15 @@ jobs:
           cache: npm
 
       - name: Install dependencies (tongshi-ju)
-        working-directory: ../tongshi-ju
+        working-directory: tongshi-ju
         run: npm ci
 
       - name: Build tongshi-ju
-        working-directory: ../tongshi-ju
+        working-directory: tongshi-ju
         run: npm run build
 
       - name: Start tongshi-ju (3100)
-        working-directory: ../tongshi-ju
+        working-directory: tongshi-ju
         run: PORT=3100 npm start &
         env:
           BROWSER: none
@@ -359,13 +359,13 @@ jobs:
           exit 1
 
       - name: Install Playwright browser
-        working-directory: ../tongshi-ju
+        working-directory: tongshi-ju
         run: npx playwright install --with-deps chromium
 
       # 失败即红：不跳过、不重试兜底。4+1 分轨若未同步 daily.spec.ts 的断言，
       # 这里会如实变红（属于被测仓库的口径问题，不在 agent 侧放宽）。
       - name: Run Playwright suites
-        working-directory: ../tongshi-ju
+        working-directory: tongshi-ju
         env:
           CI: ""
         run: npx playwright test
