@@ -177,6 +177,18 @@ $ AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm run test:integration
 | `t_tool_invocation` | 56 条 SUCCEEDED + 1 条 PENDING_APPROVAL | 调用记录 + 审批分支    |
 | `t_audit_log`       | `TOOL_APPROVED` / `QUOTA_EXCEEDED` 等   | 审计留痕（含治理拒绝） |
 
+**启动链证据**（aiwarden 进程日志的关键时序，说明"治理面真的起来了"而非"端口能连"）：
+
+```
+08:31:23  Flyway 开始迁移（应用启动即校验 schema，库不在会直接启动失败）
+08:31:27  Tomcat started
+08:31:28  Started AiwardenApplication
+08:31:32  kafka-1 / kafka-2 消费者 Successfully joined group
+          → 分配到 llm.call.recorded-0 与 document.delete/index.requested-0
+```
+
+> 日志本身**不入库**（运行产物）；上面是关键时序的摘录，完整复现命令见 §6.1。
+
 ### 6.3 实跑过程中修掉的三个真实缺陷
 
 > 这三条都是**只有真实实现才会暴露**的问题 —— 内存替身全都测不出来。

@@ -48,7 +48,8 @@ cd playtest-agent
 npm run playtest -- --scenario smoke
 ```
 
-跑完后看 `reports/` 下的 Markdown 与 JSON 报告。
+跑完后看 `reports/` 下的 Markdown 与 JSON 报告（运行产物，不入库）。
+报告格式样例见 [`docs/sample-report.md`](docs/sample-report.md)。
 
 ---
 
