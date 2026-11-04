@@ -15,13 +15,18 @@
  * 一条会失败 —— 那说明工具名需要对齐，而不是把断言改松。
  */
 
-import { test } from "node:test";
-
 import { AiwardenHttpClient } from "../../src/governance/aiwarden-client.js";
-import { governanceContract } from "../contract/governance.contract.js";
+import { registerGovernanceContractFiltered } from "../contract/governance.contract.js";
 
 const BASE_URL = process.env.AIWARDEN_BASE_URL ?? "http://localhost:8080";
-const TOOL = process.env.AIWARDEN_TOOL ?? "playtest.game.action";
+const TOOL = process.env.AIWARDEN_TOOL ?? "create_ticket";
+/**
+ * 租户标识必须是**数值字符串** —— aiwarden 的 `tenant_id` 是 `long`
+ * （`TenantContext.requireTenantIdAsLong()` 对非数值直接拒绝，HTTP 400）。
+ * 种子数据：`id=1, name=demo-tenant`。
+ */
+const TENANT_ID = process.env.AIWARDEN_TENANT_ID ?? "1";
+const USER_ID = process.env.AIWARDEN_USER_ID ?? "playtest-agent";
 
 async function aiwardenAvailable(): Promise<{ ok: boolean; reason: string }> {
   try {
@@ -30,8 +35,8 @@ async function aiwardenAvailable(): Promise<{ ok: boolean; reason: string }> {
     try {
       const res = await fetch(`${BASE_URL}/api/v1/agent/tools`, {
         headers: {
-          "X-Aiwarden-Tenant-Id": process.env.AIWARDEN_TENANT_ID ?? "playtest",
-          "X-Aiwarden-User-Id": process.env.AIWARDEN_USER_ID ?? "playtest-agent",
+          "X-Aiwarden-Tenant-Id": TENANT_ID,
+          "X-Aiwarden-User-Id": USER_ID,
         },
         signal: controller.signal,
       });
@@ -60,14 +65,20 @@ const probe = await aiwardenAvailable();
 const skip = probe.ok ? false : probe.reason;
 
 // 真实客户端：工具名与契约套件里的调用保持一致。
-const createClient = () => new AiwardenHttpClient({ baseUrl: BASE_URL, tool: TOOL });
+const createClient = () =>
+  new AiwardenHttpClient({
+    baseUrl: BASE_URL,
+    tool: TOOL,
+    tenantId: TENANT_ID,
+    userId: USER_ID,
+  });
 
 if (!probe.ok) {
   console.log(`[集成] 跳过真实 aiwarden 契约：${probe.reason}`);
 }
 
-for (const c of governanceContract()) {
-  test(`真实 aiwarden 契约 · ${c.name}`, { skip }, async () => {
-    await c.fn(createClient());
-  });
-}
+// 真实实现不返回 traceId（它属于 session 层）→ 那条用例标记为不适用。
+registerGovernanceContractFiltered(createClient, "真实 aiwarden 契约", {
+  includeInMemoryOnly: false,
+  skip,
+});

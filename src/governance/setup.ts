@@ -53,7 +53,9 @@ export async function setupGovernance(options: {
         `${(options.baseUrl ?? "http://localhost:8080").replace(/\/+$/, "")}/api/v1/agent/tools`,
         {
           headers: {
-            "X-Aiwarden-Tenant-Id": process.env.AIWARDEN_TENANT_ID ?? "playtest",
+            // 租户标识必须是**数值字符串** —— aiwarden 的 tenant_id 是 long，
+            // 非数值直接被拒（HTTP 400「租户标识不是合法数值」）。
+            "X-Aiwarden-Tenant-Id": process.env.AIWARDEN_TENANT_ID ?? "1",
             "X-Aiwarden-User-Id": process.env.AIWARDEN_USER_ID ?? "playtest-agent",
           },
           signal: controller.signal,

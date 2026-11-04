@@ -16,15 +16,30 @@
  * 通过 HTTP 头传递。本项目用环境变量注入，**不入日志**。
  */
 
-import { canonicalize } from "../core/fingerprint.js";
+import { canonicalize, computeFingerprint, fingerprintKey } from "../core/fingerprint.js";
 import type { GovernanceClient, GovernanceResult } from "../types/governance.js";
 
 export interface AiwardenHttpOptions {
   /** aiwarden 基地址（默认本地 8080）。 */
   readonly baseUrl?: string;
-  /** 工具名（aiwarden 侧注册的工具；未注册会被治理拒绝）。 */
+  /**
+   * 工具名（aiwarden 侧注册的工具）。
+   *
+   * aiwarden 当前注册的工具（源码核实）：`create_ticket` / `assign_ticket` / `export_data`。
+   * **没有游戏动作工具** —— 见 ARCHITECTURE §6 的验证缺口记录。
+   *
+   * `create_ticket` 的语义是通用的（PRD §10：工单是零资金风险的演示替身）：
+   * `orderRef` 参与唯一约束（幂等的最终防线），`title` 存载荷。
+   * 因此它可以被当作"游戏动作"的替身来验证整条治理管道。
+   */
   readonly tool?: string;
-  /** 租户标识（身份头）。 */
+  /**
+   * 租户标识（身份头）。
+   *
+   * **必须是数值字符串** —— aiwarden 的 `tenant_id` 是 `long`
+   * （`TenantContext.requireTenantIdAsLong()` 对非数值直接拒绝，HTTP 400）。
+   * 种子数据里是 `id=1, name=demo-tenant`。
+   */
   readonly tenantId?: string;
   /** 主体标识（身份头）。 */
   readonly userId?: string;
@@ -43,8 +58,8 @@ export class AiwardenHttpClient implements GovernanceClient {
 
   public constructor(options: AiwardenHttpOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "http://localhost:8080").replace(/\/+$/, "");
-    this.tool = options.tool ?? "playtest.game.action";
-    this.tenantId = options.tenantId ?? process.env.AIWARDEN_TENANT_ID ?? "playtest";
+    this.tool = options.tool ?? "create_ticket";
+    this.tenantId = options.tenantId ?? process.env.AIWARDEN_TENANT_ID ?? "1";
     this.userId = options.userId ?? process.env.AIWARDEN_USER_ID ?? "playtest-agent";
     this.timeoutMs = options.timeoutMs ?? 30_000;
   }
@@ -65,7 +80,7 @@ export class AiwardenHttpClient implements GovernanceClient {
         businessKey: params.businessKey,
         sessionId: params.session,
         stepNo: params.stepNo,
-        input: { action: canonicalize(params.action) },
+        input: this.buildInput(params),
       },
     );
 
@@ -88,6 +103,48 @@ export class AiwardenHttpClient implements GovernanceClient {
       businessKey: params.businessKey,
       replayed: false,
       ...(res.result?.["traceId"] ? { traceId: String(res.result["traceId"]) } : {}),
+    };
+  }
+
+  /**
+   * 构造工具输入。
+   *
+   * `create_ticket` 的契约（源码核实）：`orderRef`（必填，参与 `uk_ticket_tenant_idem`
+   * 唯一约束 —— 幂等的**最终防线**）+ `title`（必填，存载荷）。
+   *
+   * ⚠️ **`orderRef` 必须包含全部幂等维度**（businessKey + session + stepNo + 动作摘要）。
+   * 起因：aiwarden 的 `create_ticket` 用 `orderRef` 做唯一约束，
+   * 而本项目冻结契约 ③ 的 `digest` **只吃 `{stepNo, payload}`**（不含 businessKey/session）。
+   * 若直接把 `digest` 当 `orderRef`，则「不同 session 的同一动作」会撞同一个 orderRef →
+   * 被 `ON CONFLICT DO NOTHING` 吞掉 → **副作用静默丢失**（实测踩到，契约测试抓到）。
+   *
+   * 正确做法：`orderRef` = **完整**的幂等键（businessKey:session:stepNo:digest），
+   * 它由 aiwarden 侧再哈希一次得到自己的 idemKey —— 两侧语义一致且互不干扰。
+   */
+  private buildInput(params: {
+    readonly businessKey: string;
+    readonly session: string;
+    readonly stepNo: number;
+    readonly action: Readonly<Record<string, unknown>>;
+  }): Record<string, unknown> {
+    const fingerprint = computeFingerprint({
+      businessKey: params.businessKey,
+      session: params.session,
+      stepNo: params.stepNo,
+      action: { id: "", payload: params.action },
+    });
+    return {
+      orderRef: fingerprintKey(fingerprint).slice(0, 128),
+      // ⚠️ title 必须用**规范化**后的内容，否则键序不同的同一语义动作会产生不同的
+      // title → 不同的 idemKey → 治理面认不出重放（实测：契约「动作内容键序不同
+      // 视为同一动作」在真实实现上失败）。
+      //
+      // aiwarden 侧只对顶层 Map 排序（`ORDER_MAP_ENTRIES_BY_KEYS`），
+      // 所以**嵌套结构必须由本侧先规范化**，不能指望服务端。
+      title: `playtest step ${params.stepNo}: ${JSON.stringify(canonicalize(params.action))}`.slice(
+        0,
+        250,
+      ),
     };
   }
 

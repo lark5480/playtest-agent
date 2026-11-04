@@ -132,23 +132,70 @@ isTerminal(state) = state.status === "finished"
 
 ## 5. 已知边界
 
-| 边界                      | 现状                                                                                       |
-| ------------------------- | ------------------------------------------------------------------------------------------ |
-| 真实模型接入              | **已实现**（`src/llm/openai-client.ts`，OpenAI 兼容）；无端点时**显式降级**并标注原因      |
-| MCP 通道                  | **未做**。治理接入走 HTTP；aiwarden 已是 MCP 服务端，客户端接入为后续增强                  |
-| aiwarden 真实 HTTP 客户端 | **已实现**（`src/governance/aiwarden-client.ts`）；aiwarden 不可达时**显式降级**到内存替身 |
-| aiwarden 侧工具注册       | **未做**（需 aiwarden 侧注册 `playtest.game.action` —— 本项目对 aiwarden 零改动）          |
-| 被测游戏                  | othello-online（本地 mock API，零云端依赖）；chess-arena 适配器延后                        |
+| 边界                      | 现状                                                                                                                               |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 真实模型接入              | **已实现**（`src/llm/openai-client.ts`，OpenAI 兼容）；无端点时**显式降级**并标注原因                                              |
+| MCP 通道                  | **未做**。治理接入走 HTTP；aiwarden 已是 MCP 服务端，客户端接入为后续增强                                                          |
+| aiwarden 真实 HTTP 客户端 | **已实现**（`src/governance/aiwarden-client.ts`）；aiwarden 不可达时**显式降级**到内存替身                                         |
+| aiwarden 侧游戏动作工具   | **没有**（实测注册的是 `assign_ticket` / `create_ticket`）；本项目**用 `create_ticket` 作替身**验证整条治理管道，**不改 aiwarden** |
+| 单次工具调用的 traceId    | **真实实现不提供**（`ToolInvokeResponse` 无该字段；traceId 属于 session 层）→ 治理契约中该条标为「不适用」                         |
+| 被测游戏                  | othello-online（本地 mock API，零云端依赖）；chess-arena 适配器延后                                                                |
 
 ---
 
-## 6. 已知的验证缺口（如实记录，不掩饰）
+## 6. 真实治理链路的验证状态（2026-11-04 已实跑）
 
-| 缺口                         | 原因                                                          | 影响                                                                                                                |
-| ---------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| 真实 aiwarden 治理链路未实跑 | 本机 Docker daemon 不可用（Rancher Desktop 后端 socket 超时） | `tests/integration/aiwarden-governance.test.ts` 的 8 条契约**跳过**并打印原因。真实链路的幂等语义**尚未在本机验证** |
-| aiwarden 侧缺对应工具        | 本项目对 aiwarden 零改动，不能注册 `playtest.game.action`     | 即使 aiwarden 起来，工具调用也会被治理拒绝。需另行协调 aiwarden 侧注册                                              |
+### 6.1 结论
 
-> 这两条是**如实记录**的验证缺口，不是"已完成"。
-> 恢复方式：本机 Docker 可用 → 起 aiwarden → 协调工具注册 → 重跑 `npm run test:integration`，
-> 届时跳过项会变成实跑项。
+**真实 aiwarden 链路已实跑通过**：治理契约 **7 条实跑通过 + 1 条标为不适用**，0 失败。
+
+```console
+$ npm run test:integration
+✔ 真实 aiwarden 契约 · 首次调用执行副作用且 replayed=false
+✔ 真实 aiwarden 契约 · 同键重放不产生第二次副作用（幂等）
+✔ 真实 aiwarden 契约 · 不同步号不互相命中（键含 stepNo）
+✔ 真实 aiwarden 契约 · 不同 session 不互相命中
+✔ 真实 aiwarden 契约 · 同一步不同动作不互相命中（键含动作内容）
+✔ 真实 aiwarden 契约 · 动作内容键序不同视为同一动作
+✔ 真实 aiwarden 契约 · 重放返回的 tokens 与首次一致（成本归因不重复计入）
+ℹ tests 8  ℹ pass 7  ℹ fail 0  ℹ skipped 1
+```
+
+**不可达时的行为**（同一份测试）：8 条**全部跳过并打印原因**，不伪装通过：
+
+```console
+$ AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm run test:integration
+[集成] 跳过真实 aiwarden 契约：aiwarden 不可达：fetch failed
+ℹ tests 8  ℹ pass 0  ℹ fail 0  ℹ skipped 8
+```
+
+### 6.2 落库证据（治理链路真的通了，不是 HTTP 200 而已）
+
+| 表                  | 实测                                    | 说明                   |
+| ------------------- | --------------------------------------- | ---------------------- |
+| `t_ticket`          | 45 张（`title LIKE 'playtest step%'`）  | 副作用真的落库         |
+| `t_tool_invocation` | 56 条 SUCCEEDED + 1 条 PENDING_APPROVAL | 调用记录 + 审批分支    |
+| `t_audit_log`       | `TOOL_APPROVED` / `QUOTA_EXCEEDED` 等   | 审计留痕（含治理拒绝） |
+
+### 6.3 实跑过程中修掉的三个真实缺陷
+
+> 这三条都是**只有真实实现才会暴露**的问题 —— 内存替身全都测不出来。
+
+| #   | 缺陷                            | 根因                                                                                                                                                                                  | 修法                                                                                               |
+| --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| D1  | 租户标识被拒（HTTP 400）        | aiwarden 的 `tenant_id` 是 `long`，`requireTenantIdAsLong()` 对非数值直接拒绝；客户端原本默认 `"playtest"`                                                                            | 改为**数值字符串**，默认 `"1"`（种子数据 `id=1, name=demo-tenant`）；`setup.ts` 与集成测试同步修正 |
+| D2  | **不同 session 的动作互相吞掉** | 客户端把 `digest`（只吃 `{stepNo, payload}`）当 `orderRef`；而 `create_ticket` 用 `orderRef` 做唯一约束 → 不同 session 的同一动作撞键 → `ON CONFLICT DO NOTHING` → **副作用静默丢失** | `orderRef` 改为**完整幂等键**（businessKey:session:stepNo:digest），含全部维度                     |
+| D3  | 键序不同的同一动作被当成两个    | `title` 用 `JSON.stringify(action)` 原样保留键序；aiwarden 侧只对**顶层** Map 排序（`ORDER_MAP_ENTRIES_BY_KEYS`），嵌套结构不保证                                                     | 客户端先 `canonicalize` 再写入 `title`（规范化必须在本侧做，不能指望服务端）                       |
+
+> **D2 是本项目最重要的一条**：它同时暴露了两件事 ——
+> ① 冻结契约 ③ 的 `digest` **故意不含** businessKey/session（那是"动作身份"）；
+> ② 但**下游系统的唯一约束字段必须承载全部幂等维度**，否则跨维度会撞。
+> 「digest 是动作身份」与「orderRef 是完整幂等键」是两个不同层次的键，不能混用。
+
+### 6.4 仍然存在的边界
+
+| 项                              | 现状                                                                                                                             | 处置                                                                                                                                                |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| aiwarden 侧**没有游戏动作工具** | 实测注册的是 `assign_ticket` / `create_ticket`（`GET /api/v1/agent/tools`）。aiwarden PRD §10 明说「工单是零资金风险的演示替身」 | 本项目用 `create_ticket` 作**替身**验证整条管道（幂等 / 配额 / 审计 / 补偿全部生效）。**不改 aiwarden**；若将来要真游戏动作工具，需 aiwarden 侧注册 |
+| 单次调用无 traceId              | `ToolInvokeResponse` 无该字段；traceId 在 session 层（`t_agent_session.trace_id`）                                               | 治理契约中该条标 `inMemoryOnly: true`，对真实实现**显式跳过并注明原因**（不是删断言）                                                               |
+| 真实链路的**续跑**未实跑        | `POST /api/v1/agent/runs/{sessionKey}/resume` 需要先有 session 记录；本项目的续跑语义目前由内存替身 + 崩溃注入测试覆盖           | 后续项：把游戏 session 与 aiwarden session 对齐后再验证                                                                                             |
