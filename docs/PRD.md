@@ -280,17 +280,17 @@ Node.js **≥ 24.22.1**（2026-10 Node 安全公告修复线）· TypeScript 5.5
 
 ## 13. 成功标准（每条绑定命令，可复现）
 
-| #   | 标准                 | 命令                                                                         | 期望                                              |
-| --- | -------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------- |
-| S1  | Agent 自动打完一局   | `npm run playtest -- --scenario smoke`                                       | `passed`，N 步，产出报告                          |
-| S2  | 崩溃注入             | `npm run playtest -- --scenario crash --inject-crash=10`                     | 退出码 3，提示续跑点                              |
-| S3  | 崩溃续跑不重复副作用 | `npm run test:integration`                                                   | 集成用例全绿                                      |
-| S4  | 模型不可用降级       | 无 `AI_API_KEY` 时跑 smoke                                                   | `passed`，报告「降级说明」非空                    |
-| S5  | 并发冲突被拒         | `npm run test:integration`                                                   | 两个客户端同房间并发 → 恰好一个被接受，另一个 409 |
-| S6  | 静态检查与构建       | `npm run lint && npm run format:check && npm run typecheck && npm run build` | 全绿                                              |
-| S7  | CI 两段              | 推 PR                                                                        | verify + e2e 全绿                                 |
+| #   | 标准                 | 命令                                                                         | 期望                                                                                         |
+| --- | -------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| S1  | Agent 自动打完一局   | `npm run playtest -- --scenario smoke`                                       | `passed`，N 步，产出报告                                                                     |
+| S2  | 崩溃注入             | `npm run playtest -- --scenario crash --inject-crash=10`                     | 退出码 3，提示续跑点                                                                         |
+| S3  | 崩溃续跑不重复副作用 | `npm run test:integration`                                                   | 集成用例全绿                                                                                 |
+| S4  | 模型不可用降级       | 无 `AI_API_KEY` 时跑 smoke                                                   | `passed`，报告「降级说明」非空                                                               |
+| S5  | 并发冲突被拒         | `npm run test:integration`                                                   | 两个客户端同房间并发 → 恰好一个被接受，另一个 409                                            |
+| S6  | 静态检查与构建       | `npm run lint && npm run format:check && npm run typecheck && npm run build` | 全绿                                                                                         |
+| S7  | CI 全绿              | 推 PR / push dev                                                             | verify + e2e + integration-games + integration-tongshi + e2e-tongshi 全绿（run 41801302392） |
 
-**完成的定义**：S1–S7 全部可复现，真实输出贴进 README；CI 两段全绿。
+**完成的定义**：S1–S7 全部可复现，真实输出贴进 README；CI 全绿（含 e2e 与强制的游戏 / tongshi 集成）。
 
 ---
 
@@ -301,7 +301,7 @@ Node.js **≥ 24.22.1**（2026-10 Node 安全公告修复线）· TypeScript 5.5
 | **Stage 0**   | 地基：8 项冻结契约 + 纯函数内核 + SPI + 契约套件                    | ✅ 完成                                              |
 | **Stage 4**   | 驱动层：GameDriver + othello 适配器 + 策略 + Oracle + 报告 + CLI    | ✅ 完成                                              |
 | **Stage 5**   | 治理层：真实 aiwarden 客户端 + 显式降级                             | ✅ 完成（真实链路未实跑）                            |
-| **Stage 6**   | MVP 验收：命令实跑 + CI 两段                                        | ✅ 完成                                              |
+| **Stage 6**   | MVP 验收：命令实跑 + CI 全绿                                        | ✅ 完成（run 41801302392）                           |
 | **Stage 1–3** | 调研 / PRD / 裁决清单                                               | ✅ 完成                                              |
 | **后续 5**    | 真实 aiwarden 链路实跑                                              | ✅ **完成**（7 实跑 + 1 不适用；见 ARCHITECTURE §6） |
 | 后续 1        | 第二个被测对象（chess-arena 适配器，需一个只读接口）                | ✅ 完成（2026-11-04，本地内存房间 API）              |
