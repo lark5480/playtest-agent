@@ -114,20 +114,56 @@ $ npm run playtest -- --scenario smoke --seed=99
 
 ### 测试结果
 
-| 层   | 用例数 | 通过   | 说明                                                                                                                |
-| ---- | ------ | ------ | ------------------------------------------------------------------------------------------------------------------- |
-| 单元 | 80     | 80     | 纯函数内核（指纹 / PRNG / 驱动骨架 / 报告 / 策略 / Oracle / 国际象棋规则 / 429 重试）                               |
-| 契约 | 15     | 15     | 治理幂等 8 条 + **chess-arena 适配器 7 条**（本地 HTTP 假服务，不依赖真实进程）                                     |
-| 集成 | 12     | 视依赖 | 真实 aiwarden 7 条 + 真实 chess-arena 1 条 + othello 崩溃/并发 3 条 + traceId 不适用 1 条；依赖不可达时逐条显式跳过 |
+| 层   | 用例数 | 通过   | 说明                                                                                              |
+| ---- | ------ | ------ | ------------------------------------------------------------------------------------------------- |
+| 单元 | 93     | 93     | 纯函数内核（指纹 / PRNG / 驱动骨架 / 报告 / 策略 / Oracle / 国际象棋规则与历史型终局 / 429 重试） |
+| 契约 | 15     | 15     | 治理幂等 8 条 + **chess-arena 适配器 7 条**（本地 HTTP 假服务，不依赖真实进程）                   |
+| 集成 | 12     | 视模式 | 游戏链路 4 条（CI 强制跑）+ aiwarden 7 条 + traceId 不适用 1 条；依赖不可达时按下面规则跳过或失败 |
 
-### 集成测试的跳过条件（逐条打印原因，不伪装通过）
+### 集成测试：跳过 vs 失败
 
-| 套件                          | 依赖（默认地址）                         | 不可达时的行为                                                |
-| ----------------------------- | ---------------------------------------- | ------------------------------------------------------------- |
-| `aiwarden-governance.test.ts` | aiwarden，`localhost:8080`               | 7 条跳过并打印「aiwarden 不可达」；traceId 那条恒为「不适用」 |
-| `chess-arena.test.ts`         | chess-arena，`localhost:3000`            | 1 条跳过并打印「先在其仓库执行 npm run dev」                  |
-| `concurrency.test.ts`         | othello-online preview，`localhost:5173` | 2 条跳过并打印「被测游戏不可用」                              |
-| `crash-resume.test.ts`        | othello-online preview，`localhost:5173` | 1 条跳过并打印「被测游戏不可用」                              |
+规则实现只有一处：[`tests/helpers/integration-gate.ts`](tests/helpers/integration-gate.ts)。
+
+| 场景                      | 行为                                                                                  |
+| ------------------------- | ------------------------------------------------------------------------------------- |
+| 依赖可达                  | 正常跑                                                                                |
+| 依赖不可达 + 未强制       | 跳过，并打印 `SKIPPED: <依赖> 未启动（设置 PLAYTEST_REQUIRE_INTEGRATION=1 强制失败）` |
+| 依赖不可达 + 已强制       | **失败**（`assert.fail`），不允许 skip 兜绿                                           |
+| CI（`integration-games`） | 两个游戏必须起来、4 条必须通过；起不来即红                                            |
+
+强制方式（全部显式，不靠 `CI` 的隐式副作用）：
+
+- `PLAYTEST_REQUIRE_INTEGRATION=1` —— 所有依赖都必须跑
+- `PLAYTEST_REQUIRE_INTEGRATION=othello-online,chess-arena` —— 只强制列出的依赖
+- `PLAYTEST_REQUIRE_INTEGRATION=0` —— 显式本地模式，覆盖环境里常驻的 `CI=true`
+- 未设置上面变量且 `CI=true`（GitHub Actions 自动注入）—— 视同全部强制
+
+一键复现：
+
+```bash
+# 服务都不起 + 本地模式：跳过并打印，退出码 0
+PLAYTEST_REQUIRE_INTEGRATION=0 npm run test:integration
+
+# 服务都不起 + 强制模式：11 条失败（7 aiwarden + 1 chess + 3 othello），退出码 1
+PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration
+
+# 起两个游戏后 + 强制模式：游戏链路 4/4 通过
+cd ../othello-online && npm run build && npm run preview -- --port 5173
+cd ../chess-arena && npm run build && npm start
+PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:games
+
+# 起 aiwarden 后 + 强制模式：治理契约 7 条实跑
+PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:aiwarden
+```
+
+CI 侧两个 job：
+
+| job                    | 内容                                                                                                                        | 超时    |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `integration-games`    | 拉 othello-online / chess-arena → 构建 → 5173 / 3000 起服 → `PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:games` | 10 分钟 |
+| `integration-aiwarden` | 仅当仓库变量 `AIWARDEN_BASE_URL` 配置时运行，运行即强制；不配置则不运行                                                     | 5 分钟  |
+
+aiwarden 的 7 条需要 Java 21 + Maven + Docker（PG / Redis / Kafka / MinIO），托管 runner 冷启动装不下，**不在默认 CI 里假装通过**：job 不配置 URL 就不运行（Actions 里显示 Skipped），配置了就必须真跑、失败即红。
 
 ### 第二游戏适配：chess-arena（2026-11-04 实跑）
 
@@ -151,6 +187,12 @@ $ node --import tsx --test tests/integration/chess-arena.test.ts
 只代表「末步生效且无断言失败」，不代表整局终局。连续跑多局撞上限时，适配器会等待一个
 滑动窗口（约 61 秒）后重试一次，不把 429 当成游戏缺陷。
 
+**历史型和棋由本地独立判定**：适配器在状态 payload 里维护 `fenHistory`，用
+`core/chess-rules.ts` 的 `analyzeHistory` 重算「三次重复 / 50 步」；服务端仍报 playing 时
+也会补判为和棋。Oracle 用 CHS8–CHS11 复核服务端声明（threefold 必须真有 3 次重复、
+fifty 必须半回合到 100、漏判要报、将死优先于判和）。国际象棋**没有**「连续 60 步将军」
+规则 —— 长将由三次重复或 50 步终结（另有五次重复 / 75 步自动和棋上限），判据不是将军次数。
+
 ### 真实 aiwarden 治理链路：已实跑（2026-11-04）
 
 本机 Docker 恢复可用后，真实链路首次跑通：
@@ -170,12 +212,16 @@ $ npm run test:integration
 **落库证据**（不只是 HTTP 200）：`t_ticket` 45 张、`t_tool_invocation` 56 条 SUCCEEDED、
 `t_audit_log` 含 `TOOL_APPROVED` / `QUOTA_EXCEEDED`。
 
-不可达时**跳过并打印原因**，不伪装通过：
+依赖不可达时的两种行为（本地模式跳过并打印；强制模式直接失败）：
 
 ```console
-$ AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm run test:integration
-[集成] 跳过真实 aiwarden 契约：aiwarden 不可达：fetch failed
-ℹ tests 8  ℹ pass 0  ℹ fail 0  ℹ skipped 8
+$ PLAYTEST_REQUIRE_INTEGRATION=0 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm run test:integration
+SKIPPED: aiwarden 未启动（设置 PLAYTEST_REQUIRE_INTEGRATION=1 强制失败）
+ℹ tests 12  ℹ pass 0  ℹ fail 0  ℹ skipped 12
+
+$ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm run test:integration:aiwarden
+[集成] 强制模式：aiwarden 未启动：aiwarden 不可达：fetch failed
+ℹ tests 8  ℹ pass 0  ℹ fail 7  ℹ skipped 1
 ```
 
 **实跑暴露了三个只有真实实现才会暴露的缺陷**（内存替身全都测不出来）——
