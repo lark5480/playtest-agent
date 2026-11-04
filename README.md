@@ -114,11 +114,11 @@ $ npm run playtest -- --scenario smoke --seed=99
 
 ### 测试结果
 
-| 层   | 用例数 | 通过   | 说明                                                                                              |
-| ---- | ------ | ------ | ------------------------------------------------------------------------------------------------- |
-| 单元 | 93     | 93     | 纯函数内核（指纹 / PRNG / 驱动骨架 / 报告 / 策略 / Oracle / 国际象棋规则与历史型终局 / 429 重试） |
-| 契约 | 15     | 15     | 治理幂等 8 条 + **chess-arena 适配器 7 条**（本地 HTTP 假服务，不依赖真实进程）                   |
-| 集成 | 12     | 视模式 | 游戏链路 4 条（CI 强制跑）+ aiwarden 7 条 + traceId 不适用 1 条；依赖不可达时按下面规则跳过或失败 |
+| 层   | 用例数 | 通过   | 说明                                                                                                                            |
+| ---- | ------ | ------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| 单元 | 93     | 93     | 纯函数内核（指纹 / PRNG / 驱动骨架 / 报告 / 策略 / Oracle / 国际象棋规则与历史型终局 / 429 重试）                               |
+| 契约 | 15     | 15     | 治理幂等 8 条 + **chess-arena 适配器 7 条**（本地 HTTP 假服务，不依赖真实进程）                                                 |
+| 集成 | 17     | 视模式 | 游戏链路 4 条、tongshi duel 5 条（CI 强制跑）+ aiwarden 8 条（7 条实跑 + traceId 1 条不适用）；依赖不可达时按下面规则跳过或失败 |
 
 ### 集成测试：跳过 vs 失败
 
@@ -144,7 +144,8 @@ $ npm run playtest -- --scenario smoke --seed=99
 # 服务都不起 + 本地模式：跳过并打印，退出码 0
 PLAYTEST_REQUIRE_INTEGRATION=0 npm run test:integration
 
-# 服务都不起 + 强制模式：11 条失败（7 aiwarden + 1 chess + 3 othello），退出码 1
+# 服务都不起 + 强制模式：16 条失败（7 aiwarden + 4 游戏 + 5 tongshi），
+# traceId 1 条不适用跳过，退出码 1
 PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration
 
 # 起两个游戏后 + 强制模式：游戏链路 4/4 通过
@@ -156,11 +157,15 @@ PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:games
 PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:aiwarden
 ```
 
-CI 侧两个 job：
+CI 侧相关 job：
 
 | job                    | 内容                                                                                                                        | 超时    |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `verify`               | lint / format / typecheck / 单测 / 契约 / 构建                                                                              | 未设    |
+| `e2e`                  | 拉 othello-online → 起服 → `npm run playtest -- --scenario smoke` → 上传 `playtest-report`                                  | 未设    |
 | `integration-games`    | 拉 othello-online / chess-arena → 构建 → 5173 / 3000 起服 → `PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:games` | 10 分钟 |
+| `integration-tongshi`  | 拉 tongshi-ju → 构建 → 3100 起服 → `PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:tongshi`                        | 15 分钟 |
+| `e2e-tongshi`          | 拉 tongshi-ju → 起服 → 复用其自带 Playwright 套件（actor 侧不引 Playwright 依赖）                                           | 15 分钟 |
 | `integration-aiwarden` | 仅当仓库变量 `AIWARDEN_BASE_URL` 配置时运行，运行即强制；不配置则不运行                                                     | 5 分钟  |
 
 aiwarden 的 7 条需要 Java 21 + Maven + Docker（PG / Redis / Kafka / MinIO），托管 runner 冷启动装不下，**不在默认 CI 里假装通过**：job 不配置 URL 就不运行（Actions 里显示 Skipped），配置了就必须真跑、失败即红。
@@ -264,11 +269,12 @@ othello 的"对方无子可下 → 保持当前回合"合法跳过与"该换没�
 - 8 项**冻结契约**（类型 / 指纹算法 / 四个 SPI / 治理键构成 / 报告结构）
 - 纯函数内核：幂等指纹、种子化 PRNG、驱动骨架、报告渲染
 - 适配器与治理的**契约测试套件**（任何实现接入必过）
-- 驱动层：GameDriver + othello 适配器 + LLM 策略（带显式降级）+ 通用 / 游戏特异 Oracle
+- 驱动层：GameDriver + othello / chess-arena 双适配器 + LLM 策略（带显式降级）+ 通用 / 游戏特异 Oracle
 - 治理层：真实 aiwarden HTTP 客户端（不可达时**显式降级**到内存替身）
 - MVP 验收：自动打完一局、崩溃续跑不重复副作用、并发冲突 409 拦截、降级不中断
+- CI：verify / e2e / integration-games / integration-tongshi / e2e-tongshi 全绿（run 41801302392）
 
-待做：Stage 1–3 的文档（调研 / PRD / 裁决清单）；真实 aiwarden 链路实跑（受本机 Docker 限制）。
+待做（路线图后续项，不属于 MVP）：场景级预算熔断、MCP 通道、报告跨场景基线 diff、真实链路续跑。
 
 ---
 

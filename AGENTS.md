@@ -134,7 +134,8 @@ npm run build
 改动一律在 `dev` 上做 → 提 PR → 合入 `master`；**不直推 `master`、不 force-push**。
 
 **CI**：push / PR 到 `master` / `main` / `dev` 均触发；
-`verify`（lint / format / typecheck / 单测 / 构建）→ `e2e`（真实跑一局），
+`verify`（lint / format / typecheck / 单测 / 契约 / 构建）→ `e2e`（真实跑一局）
+→ `integration-games` / `integration-tongshi` / `e2e-tongshi`（强制真实服务），
 细节以 `.github/workflows/ci.yml` 为准。**CI 绿灯 = 可合并判据**。
 
 **提交信息**：`type: 中文描述`（`docs` / `feat` / `fix` / `test` / `chore`），
