@@ -32,7 +32,13 @@ interface PublicState {
   currentTurn: "black" | "white";
   moveCount: number;
   winner: "black" | "white" | "draw" | null;
-  /** 乐观并发版本戳（用于 `expectedUpdatedAt`）。 */
+  /**
+   * 乐观并发版本戳（用于 `expectedUpdatedAt`）。
+   *
+   * **不放进 GameState.payload**：它是服务端写入时刻，同 seed 的两局也必然不同；
+   * 放进 payload 会破坏"同 seed 初始状态一致"的适配器契约。适配器按房间号
+   * 私有缓存最新值，`act` 时取用。
+   */
   updatedAt: number;
 }
 
@@ -54,6 +60,8 @@ export class OthelloLocalAdapter implements GameAdapter {
 
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  /** 按房间号缓存服务端最新版本戳；只用于乐观并发，不外泄到状态 payload。 */
+  private readonly updatedAtByRoom = new Map<string, number>();
 
   public constructor(options: OthelloLocalOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "http://localhost:5173").replace(/\/+$/, "");
@@ -145,6 +153,16 @@ export class OthelloLocalAdapter implements GameAdapter {
     const turn = params.state.turn === "black" ? blackId : whiteId;
     const row = Number(params.action.payload["row"]);
     const col = Number(params.action.payload["col"]);
+    const expectedUpdatedAt = this.updatedAtByRoom.get(roomId);
+    if (typeof expectedUpdatedAt !== "number") {
+      // 不静默跳过并发校验：othello 服务端的 expectedUpdatedAt 是可选的，
+      // 缺省时过期局面会被直接接受。缓存缺失说明调用方绕过了
+      // open / resume / observe，此时继续落子等于假装并发保护仍然有效。
+      throw new Error(
+        `othello 适配器缺少房间 ${roomId} 的版本戳缓存：` +
+          "act 前必须先 open / resume / observe 取得最新局面，否则无法发送 expectedUpdatedAt，服务端会跳过并发校验。",
+      );
+    }
 
     try {
       const res = await this.request<{ state: PublicState }>("POST", `/api/room/${roomId}/move`, {
@@ -155,12 +173,8 @@ export class OthelloLocalAdapter implements GameAdapter {
         // （`server/mockApi.ts` 与 `edge-functions/api/room/[roomId]/move.ts`
         //   都是 `typeof expectedUpdatedAt === 'number' && ...`）——
         //   不传就等于放弃并发保护，基于过期局面的落子会被静默接受。
-        //
-        // 本适配器**始终**带上它：Agent 要走的是真实客户端的严格路径，
-        // 否则"并发没问题"这个结论是假的。
-        ...(typeof params.state.payload["updatedAt"] === "number"
-          ? { expectedUpdatedAt: params.state.payload["updatedAt"] }
-          : { __missingExpectedUpdatedAt: true }),
+        // 缓存缺失时已在上面显式抛错，不会走到这里。
+        expectedUpdatedAt,
       });
       return {
         ok: true,
@@ -187,6 +201,8 @@ export class OthelloLocalAdapter implements GameAdapter {
 
   /** 把服务端公开状态转成 Agent 的 GameState。 */
   private toGameState(publicState: PublicState): GameState {
+    // 服务端版本戳按房间私有缓存，供下一次 act 的乐观并发校验使用。
+    this.updatedAtByRoom.set(publicState.roomId, publicState.updatedAt);
     const legalActions = this.computeLegalActions(publicState.board, publicState.currentTurn);
     return {
       id: publicState.roomId,
@@ -198,8 +214,6 @@ export class OthelloLocalAdapter implements GameAdapter {
         moveCount: publicState.moveCount,
         winner: publicState.winner,
         seq: Number(publicState.moveCount),
-        // 乐观并发用的版本戳（othello 的 `expectedUpdatedAt`）。
-        updatedAt: publicState.updatedAt,
       },
     };
   }
