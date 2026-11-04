@@ -32,7 +32,13 @@ interface PublicState {
   currentTurn: "black" | "white";
   moveCount: number;
   winner: "black" | "white" | "draw" | null;
-  /** 乐观并发版本戳（用于 `expectedUpdatedAt`）。 */
+  /**
+   * 乐观并发版本戳（用于 `expectedUpdatedAt`）。
+   *
+   * **不放进 GameState.payload**：它是服务端写入时刻，同 seed 的两局也必然不同；
+   * 放进 payload 会破坏"同 seed 初始状态一致"的适配器契约。适配器按房间号
+   * 私有缓存最新值，`act` 时取用。
+   */
   updatedAt: number;
 }
 
@@ -54,6 +60,8 @@ export class OthelloLocalAdapter implements GameAdapter {
 
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  /** 按房间号缓存服务端最新版本戳；只用于乐观并发，不外泄到状态 payload。 */
+  private readonly updatedAtByRoom = new Map<string, number>();
 
   public constructor(options: OthelloLocalOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "http://localhost:5173").replace(/\/+$/, "");
@@ -145,6 +153,7 @@ export class OthelloLocalAdapter implements GameAdapter {
     const turn = params.state.turn === "black" ? blackId : whiteId;
     const row = Number(params.action.payload["row"]);
     const col = Number(params.action.payload["col"]);
+    const expectedUpdatedAt = this.updatedAtByRoom.get(roomId);
 
     try {
       const res = await this.request<{ state: PublicState }>("POST", `/api/room/${roomId}/move`, {
@@ -158,8 +167,8 @@ export class OthelloLocalAdapter implements GameAdapter {
         //
         // 本适配器**始终**带上它：Agent 要走的是真实客户端的严格路径，
         // 否则"并发没问题"这个结论是假的。
-        ...(typeof params.state.payload["updatedAt"] === "number"
-          ? { expectedUpdatedAt: params.state.payload["updatedAt"] }
+        ...(typeof expectedUpdatedAt === "number"
+          ? { expectedUpdatedAt }
           : { __missingExpectedUpdatedAt: true }),
       });
       return {
@@ -187,6 +196,8 @@ export class OthelloLocalAdapter implements GameAdapter {
 
   /** 把服务端公开状态转成 Agent 的 GameState。 */
   private toGameState(publicState: PublicState): GameState {
+    // 服务端版本戳按房间私有缓存，供下一次 act 的乐观并发校验使用。
+    this.updatedAtByRoom.set(publicState.roomId, publicState.updatedAt);
     const legalActions = this.computeLegalActions(publicState.board, publicState.currentTurn);
     return {
       id: publicState.roomId,
@@ -198,8 +209,6 @@ export class OthelloLocalAdapter implements GameAdapter {
         moveCount: publicState.moveCount,
         winner: publicState.winner,
         seq: Number(publicState.moveCount),
-        // 乐观并发用的版本戳（othello 的 `expectedUpdatedAt`）。
-        updatedAt: publicState.updatedAt,
       },
     };
   }
