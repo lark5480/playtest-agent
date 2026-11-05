@@ -64,4 +64,8 @@ export interface Decision {
   readonly degraded: boolean;
   /** 降级原因（degraded 为 true 时必填）。 */
   readonly degradedReason?: string;
+  /** 模型调用消耗的 token 数（确定性基线不产生；无 usage 时不填）。 */
+  readonly llmTokens?: number;
+  /** 实际参与决策的模型标识（写进报告，便于区分数据来源）。 */
+  readonly model?: string;
 }

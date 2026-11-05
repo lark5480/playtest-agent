@@ -103,7 +103,7 @@ test("fingerprintKey 拼接稳定且可对照", () => {
     action: action({ row: 1 }),
   });
   const key = fingerprintKey(fp);
-  assert.ok(key.startsWith("room1:"));
-  assert.ok(key.includes(":s1:"));
-  assert.ok(key.includes(":2:"));
+  assert.ok(key.startsWith("room1::"));
+  assert.ok(key.includes("::s1::"));
+  assert.ok(key.includes("::2::"));
 });

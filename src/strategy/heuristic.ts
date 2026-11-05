@@ -8,25 +8,13 @@
  * 确定性保证：只用 seed + 局面，不用真随机、不用时间。
  */
 
-import { createPrng, pickOne } from "../core/prng.js";
-import type { Prng } from "../core/prng.js";
+import { createPrng, pickOne, seedFrom } from "../core/prng.js";
 import type { Decision, Observation } from "../types/game.js";
 
 import type { Strategy } from "./strategy.js";
 
 export class HeuristicStrategy implements Strategy {
   readonly name = "heuristic-random";
-
-  /**
-   * 每个 seed 一个 PRNG 实例。
-   *
-   * PRNG 是有状态的：连续调用会漂移。若每次 decide 都新建，
-   * 每步都会取到序列的第一个数 → 动作只由"合法动作集的顺序"决定，
-   * 探索性为零（总选第一个合法点）。
-   *
-   * 按 seed 缓存实例 → 同 seed 的整局动作序列完全确定（红线 2.4）。
-   */
-  private readonly prngs = new Map<number, Prng>();
 
   async decide(params: {
     readonly observation: Observation;
@@ -43,12 +31,12 @@ export class HeuristicStrategy implements Strategy {
       };
     }
 
-    let prng = this.prngs.get(seed);
-    if (!prng) {
-      prng = createPrng(seed);
-      this.prngs.set(seed, prng);
-    }
-
+    // **无状态**：每步只由 (seed, observation.seq) 派生 PRNG。
+    //
+    // 有状态 PRNG 的序列依赖"从第 0 步一路走到这里"；新进程续跑时内部状态已丢，
+    // 从中间局面重新决策会得到不同动作，与"同 seed + 同局面 → 同动作"冲突。
+    // 按显式输入派生后，续跑与独立运行能走出同一动作序列。
+    const prng = createPrng(seedFrom(`${seed}:${observation.seq}`));
     const chosen = pickOne(prng, actions);
     if (!chosen) {
       return { action: null, reason: "合法动作集为空", degraded: false };

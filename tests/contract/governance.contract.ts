@@ -181,22 +181,64 @@ export function governanceContract(): readonly GovernanceContractCase[] {
       inMemoryOnly: true,
     },
     {
-      name: "重放返回的 tokens 与首次一致（成本归因不重复计入）",
+      name: "单次调用返回 tokens（仅同步成本口径的实现）",
       fn: async (client) => {
         const businessKey = uniqueKey();
         const session = uniqueKey();
+        let performed = 0;
         const call = () =>
           client.invoke({
             businessKey,
             session,
             stepNo: 0,
             action: { row: 1 },
-            perform: async () => {},
+            perform: async () => {
+              performed += 1;
+            },
           });
         const first = await call();
         const second = await call();
+        assert.equal(typeof first.tokens, "number", "同步成本实现必须返回 tokens");
+        assert.ok((first.tokens ?? 0) > 0, "首次调用的 tokens 必须为正数");
         assert.equal(second.tokens, first.tokens, "重放的 token 口径应与首次一致");
+        assert.equal(performed, 1, "重放不得重复执行副作用");
       },
+      /** 真实 aiwarden 的单次响应不含成本；它走按 session 查询（见下一条与真实集成测试）。 */
+      inMemoryOnly: true,
+    },
+    {
+      name: "按 session 查询用量：重放不重复计入",
+      fn: async (client) => {
+        assert.ok(client.queryUsage, "提供成本能力的实现必须有 queryUsage");
+        const businessKey = uniqueKey();
+        const session = uniqueKey();
+        const call = (stepNo: number) =>
+          client.invoke({
+            businessKey,
+            session,
+            stepNo,
+            action: { row: 1 },
+            perform: async () => {},
+          });
+
+        const first = await call(0);
+        await call(0); // 同键重放
+        await call(1);
+
+        const usage = await client.queryUsage!({ session });
+        assert.notEqual(usage.source, "unavailable", "有调用的 session 不应查不到用量");
+        const step0 = usage.byStep.find((entry) => entry.stepNo === 0);
+        const step1 = usage.byStep.find((entry) => entry.stepNo === 1);
+        assert.ok(step0, "应能查到 step 0 的用量");
+        assert.ok(step1, "应能查到 step 1 的用量");
+        assert.equal(
+          step0.promptTokens + step0.completionTokens,
+          first.tokens,
+          "同键重放不得让该步用量翻倍",
+        );
+      },
+      /** 真实 aiwarden 的用量异步落库，由专门的真实 usage 集成测试覆盖。 */
+      inMemoryOnly: true,
     },
   ];
 }

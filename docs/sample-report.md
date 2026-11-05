@@ -1,23 +1,41 @@
 # Playtest 报告 · smoke（验收样例）
 
-> **本文是一次真实运行的报告样例**，用来展示报告格式与字段含义。
-> 复现命令见 [`../README.md`](../README.md) §MVP 验收。
+> **本文是一次真实运行的报告样例**（2026-11-05，本机 othello-online preview）。
+> 复现命令：`npm run playtest -- --scenario smoke --seed=42`。
 > 原始运行产物不入库（`reports/` 已在 `.gitignore`）。
+>
+> 本次未配置模型、aiwarden 不可达，因此：LLM tokens=0、治理 tokens 为内存替身的**合成值**、
+> traceId 为替身生成值。这三项不能当作真实成本/真实 trace 证据；真实链路口径见 README。
+
+# Playtest 报告 · smoke
 
 | 项                   | 值            |
 | -------------------- | ------------- |
 | 状态                 | **passed**    |
 | 场景                 | smoke         |
 | 会话                 | `pt-smoke-42` |
-| 对局                 | `JQJFHW`      |
+| 对局                 | `RBZB86`      |
 | 随机种子             | `42`          |
-| 步数                 | 59            |
-| 降级步数             | 59            |
+| 步数                 | 60            |
+| 降级步数             | 60            |
 | 重放步数（幂等命中） | 0             |
 | 失败步数             | 0             |
 | 治理来源             | `in-memory`   |
 
 > ⚠️ **治理降级**：aiwarden 不可达（fetch failed），已降级到内存治理替身
+
+## 治理证据
+
+| 项               | 值        |
+| ---------------- | --------- |
+| LLM tokens       | 0         |
+| 治理 tokens      | 600       |
+| tokens 合计      | 600       |
+| token 来源       | synthetic |
+| 无成本数据步数   | 0         |
+| traceId 覆盖步数 | 60/60     |
+
+> 内存替身的 token 数是固定合成值，不代表真实成本。
 
 ## 发现
 
@@ -25,67 +43,68 @@
 
 ## 步骤
 
-| #   | 动作 | 结果    | 幂等 | 降级 | 摘要       | 耗时(ms) |
-| --- | ---- | ------- | ---- | ---- | ---------- | -------- |
-| 0   | 2,3  | applied | 否   | 是   | `19486dcc` | 5        |
-| 1   | 2,4  | applied | 否   | 是   | `02b4f17c` | 3        |
-| 2   | 5,5  | applied | 否   | 是   | `9e1bf1eb` | 3        |
-| 3   | 5,4  | applied | 否   | 是   | `c1e09824` | 3        |
-| 4   | 1,5  | applied | 否   | 是   | `01f2fee3` | 3        |
-| 5   | 3,2  | applied | 否   | 是   | `39ec534b` | 2        |
-| 6   | 5,3  | applied | 否   | 是   | `c16e35be` | 4        |
-| 7   | 6,6  | applied | 否   | 是   | `4ede5c2a` | 3        |
-| 8   | 5,6  | applied | 否   | 是   | `f2b31bbe` | 2        |
-| 9   | 4,2  | applied | 否   | 是   | `b20021d4` | 2        |
-| 10  | 3,1  | applied | 否   | 是   | `3684a745` | 2        |
-| 11  | 4,6  | applied | 否   | 是   | `8651082d` | 2        |
-| 12  | 5,7  | applied | 否   | 是   | `6037bd98` | 3        |
-| 13  | 6,2  | applied | 否   | 是   | `e40a047d` | 2        |
-| 14  | 4,5  | applied | 否   | 是   | `28cf2757` | 2        |
-| 15  | 1,3  | applied | 否   | 是   | `5e51e2f7` | 2        |
-| 16  | 3,7  | applied | 否   | 是   | `2efcd02d` | 2        |
-| 17  | 3,5  | applied | 否   | 是   | `95c16eef` | 2        |
-| 18  | 6,4  | applied | 否   | 是   | `0cadb74d` | 2        |
-| 19  | 4,1  | applied | 否   | 是   | `9dc68780` | 2        |
-| 20  | 5,1  | applied | 否   | 是   | `5e8a55ff` | 2        |
-| 21  | 7,4  | applied | 否   | 是   | `03a383f0` | 1        |
-| 22  | 7,6  | applied | 否   | 是   | `7872febe` | 2        |
-| 23  | 5,0  | applied | 否   | 是   | `3ceb50a0` | 2        |
-| 24  | 2,6  | applied | 否   | 是   | `53f3e1b9` | 2        |
-| 25  | 2,0  | applied | 否   | 是   | `d804ebd6` | 2        |
-| 26  | 7,1  | applied | 否   | 是   | `f0e9b546` | 2        |
-| 27  | 6,7  | applied | 否   | 是   | `53c88e1a` | 2        |
-| 28  | 3,0  | applied | 否   | 是   | `7c2e4faa` | 2        |
-| 29  | 0,6  | applied | 否   | 是   | `6d31b9b2` | 2        |
-| 30  | 1,4  | applied | 否   | 是   | `2328c243` | 2        |
-| 31  | 5,2  | applied | 否   | 是   | `b6c5f8e4` | 2        |
-| 32  | 7,7  | applied | 否   | 是   | `21b87505` | 3        |
-| 33  | 0,5  | applied | 否   | 是   | `6f7eebfa` | 3        |
-| 34  | 7,5  | applied | 否   | 是   | `f40b9121` | 2        |
-| 35  | 6,3  | applied | 否   | 是   | `1e54113a` | 2        |
-| 36  | 6,0  | applied | 否   | 是   | `81d31ad0` | 1        |
-| 37  | 4,0  | applied | 否   | 是   | `c12df32c` | 2        |
-| 38  | 1,0  | applied | 否   | 是   | `eeabcf51` | 2        |
-| 39  | 6,5  | applied | 否   | 是   | `24c7c2c4` | 1        |
-| 40  | 1,2  | applied | 否   | 是   | `b44c1bc6` | 2        |
-| 41  | 2,1  | applied | 否   | 是   | `537e8bab` | 2        |
-| 42  | 0,3  | applied | 否   | 是   | `53a17db1` | 2        |
-| 43  | 6,1  | applied | 否   | 是   | `758e434a` | 2        |
-| 44  | 0,4  | applied | 否   | 是   | `d78e9e57` | 2        |
-| 45  | 0,2  | applied | 否   | 是   | `cf28c117` | 1        |
-| 46  | 7,3  | applied | 否   | 是   | `cc49f645` | 2        |
-| 47  | 3,6  | applied | 否   | 是   | `be0efdae` | 1        |
-| 48  | 4,7  | applied | 否   | 是   | `7e70b7ed` | 2        |
-| 49  | 1,6  | applied | 否   | 是   | `75f41a49` | 2        |
-| 50  | 7,0  | applied | 否   | 是   | `20e3766c` | 1        |
-| 51  | 2,5  | applied | 否   | 是   | `812932fb` | 2        |
-| 52  | 0,7  | applied | 否   | 是   | `7308bcdc` | 1        |
-| 53  | 7,2  | applied | 否   | 是   | `46d89608` | 2        |
-| 54  | 2,2  | applied | 否   | 是   | `4d8aec7b` | 2        |
-| 55  | 1,1  | applied | 否   | 是   | `f90eee80` | 1        |
-| 56  | 0,1  | applied | 否   | 是   | `ea74808d` | 2        |
-| 57  | 1,7  | applied | 否   | 是   | `152c3593` | 1        |
-| 58  | 2,7  | applied | 否   | 是   | `c3bdd4f7` | 2        |
+| #   | 动作 | 结果    | 幂等 | 降级 | tokens | trace           | 摘要       | 耗时(ms) |
+| --- | ---- | ------- | ---- | ---- | ------ | --------------- | ---------- | -------- |
+| 0   | 5,4  | applied | 否   | 是   | gov:10 | trace-RBZB86-0  | `fbce98a1` | 3        |
+| 1   | 5,3  | applied | 否   | 是   | gov:10 | trace-RBZB86-1  | `b6f6b3b9` | 3        |
+| 2   | 4,2  | applied | 否   | 是   | gov:10 | trace-RBZB86-2  | `7748120b` | 3        |
+| 3   | 3,5  | applied | 否   | 是   | gov:10 | trace-RBZB86-3  | `c0bd4564` | 6        |
+| 4   | 4,5  | applied | 否   | 是   | gov:10 | trace-RBZB86-4  | `c4195d06` | 4        |
+| 5   | 5,6  | applied | 否   | 是   | gov:10 | trace-RBZB86-5  | `4b36cfac` | 4        |
+| 6   | 2,4  | applied | 否   | 是   | gov:10 | trace-RBZB86-6  | `60947961` | 3        |
+| 7   | 3,2  | applied | 否   | 是   | gov:10 | trace-RBZB86-7  | `c6b02d55` | 2        |
+| 8   | 3,6  | applied | 否   | 是   | gov:10 | trace-RBZB86-8  | `5ec69453` | 1        |
+| 9   | 5,1  | applied | 否   | 是   | gov:10 | trace-RBZB86-9  | `78693441` | 2        |
+| 10  | 6,3  | applied | 否   | 是   | gov:10 | trace-RBZB86-10 | `8d628449` | 2        |
+| 11  | 1,4  | applied | 否   | 是   | gov:10 | trace-RBZB86-11 | `ec76baff` | 1        |
+| 12  | 2,6  | applied | 否   | 是   | gov:10 | trace-RBZB86-12 | `077388a4` | 2        |
+| 13  | 6,4  | applied | 否   | 是   | gov:10 | trace-RBZB86-13 | `86324704` | 2        |
+| 14  | 2,5  | applied | 否   | 是   | gov:10 | trace-RBZB86-14 | `1f7bf416` | 1        |
+| 15  | 4,7  | applied | 否   | 是   | gov:10 | trace-RBZB86-15 | `a803f6b9` | 1        |
+| 16  | 6,2  | applied | 否   | 是   | gov:10 | trace-RBZB86-16 | `ebeece82` | 2        |
+| 17  | 5,5  | applied | 否   | 是   | gov:10 | trace-RBZB86-17 | `780d4fc5` | 1        |
+| 18  | 3,1  | applied | 否   | 是   | gov:10 | trace-RBZB86-18 | `eaa12150` | 1        |
+| 19  | 6,1  | applied | 否   | 是   | gov:10 | trace-RBZB86-19 | `60666f1b` | 1        |
+| 20  | 6,6  | applied | 否   | 是   | gov:10 | trace-RBZB86-20 | `75264490` | 2        |
+| 21  | 2,7  | applied | 否   | 是   | gov:10 | trace-RBZB86-21 | `4a3360eb` | 1        |
+| 22  | 1,5  | applied | 否   | 是   | gov:10 | trace-RBZB86-22 | `5bf5fc4a` | 1        |
+| 23  | 3,0  | applied | 否   | 是   | gov:10 | trace-RBZB86-23 | `d39ac0a9` | 1        |
+| 24  | 2,0  | applied | 否   | 是   | gov:10 | trace-RBZB86-24 | `e97196f6` | 1        |
+| 25  | 7,7  | applied | 否   | 是   | gov:10 | trace-RBZB86-25 | `cd6aaa46` | 0        |
+| 26  | 2,2  | applied | 否   | 是   | gov:10 | trace-RBZB86-26 | `6dd46158` | 1        |
+| 27  | 1,0  | applied | 否   | 是   | gov:10 | trace-RBZB86-27 | `624f734c` | 1        |
+| 28  | 6,0  | applied | 否   | 是   | gov:10 | trace-RBZB86-28 | `c1bf03c8` | 1        |
+| 29  | 2,3  | applied | 否   | 是   | gov:10 | trace-RBZB86-29 | `c52479e2` | 1        |
+| 30  | 7,3  | applied | 否   | 是   | gov:10 | trace-RBZB86-30 | `2f01c4c3` | 1        |
+| 31  | 2,1  | applied | 否   | 是   | gov:10 | trace-RBZB86-31 | `ae2221ed` | 1        |
+| 32  | 3,7  | applied | 否   | 是   | gov:10 | trace-RBZB86-32 | `8e3d7999` | 1        |
+| 33  | 0,5  | applied | 否   | 是   | gov:10 | trace-RBZB86-33 | `6f7eebfa` | 1        |
+| 34  | 0,3  | applied | 否   | 是   | gov:10 | trace-RBZB86-34 | `a19d8b7b` | 2        |
+| 35  | 4,0  | applied | 否   | 是   | gov:10 | trace-RBZB86-35 | `a4b4692c` | 1        |
+| 36  | 0,4  | applied | 否   | 是   | gov:10 | trace-RBZB86-36 | `29a69f19` | 2        |
+| 37  | 1,7  | applied | 否   | 是   | gov:10 | trace-RBZB86-37 | `84850c70` | 1        |
+| 38  | 7,4  | applied | 否   | 是   | gov:10 | trace-RBZB86-38 | `16dfac4b` | 1        |
+| 39  | 7,5  | applied | 否   | 是   | gov:10 | trace-RBZB86-39 | `6fd03c70` | 2        |
+| 40  | 5,7  | applied | 否   | 是   | gov:10 | trace-RBZB86-40 | `845b2d34` | 0        |
+| 41  | 4,1  | applied | 否   | 是   | gov:10 | trace-RBZB86-41 | `a5d8a462` | 0        |
+| 42  | 5,2  | applied | 否   | 是   | gov:10 | trace-RBZB86-42 | `496733f3` | 1        |
+| 43  | 4,6  | applied | 否   | 是   | gov:10 | trace-RBZB86-43 | `8368eb63` | 1        |
+| 44  | 6,5  | applied | 否   | 是   | gov:10 | trace-RBZB86-44 | `f9a23a03` | 0        |
+| 45  | 0,6  | applied | 否   | 是   | gov:10 | trace-RBZB86-45 | `02cce338` | 1        |
+| 46  | 0,7  | applied | 否   | 是   | gov:10 | trace-RBZB86-46 | `cd938976` | 1        |
+| 47  | 1,3  | applied | 否   | 是   | gov:10 | trace-RBZB86-47 | `29f0805c` | 1        |
+| 48  | 1,1  | applied | 否   | 是   | gov:10 | trace-RBZB86-48 | `74ea6844` | 1        |
+| 49  | 7,2  | applied | 否   | 是   | gov:10 | trace-RBZB86-49 | `7a6b0c46` | 2        |
+| 50  | 0,2  | applied | 否   | 是   | gov:10 | trace-RBZB86-50 | `04c25311` | 1        |
+| 51  | 1,2  | applied | 否   | 是   | gov:10 | trace-RBZB86-51 | `03fa993e` | 1        |
+| 52  | 7,6  | applied | 否   | 是   | gov:10 | trace-RBZB86-52 | `004626b2` | 0        |
+| 53  | 1,6  | applied | 否   | 是   | gov:10 | trace-RBZB86-53 | `7c15f646` | 0        |
+| 54  | 0,1  | applied | 否   | 是   | gov:10 | trace-RBZB86-54 | `93ee63a3` | 1        |
+| 55  | 6,7  | applied | 否   | 是   | gov:10 | trace-RBZB86-55 | `aeb04c61` | 2        |
+| 56  | 0,0  | applied | 否   | 是   | gov:10 | trace-RBZB86-56 | `326befb4` | 1        |
+| 57  | 7,1  | applied | 否   | 是   | gov:10 | trace-RBZB86-57 | `819b73c9` | 2        |
+| 58  | 5,0  | applied | 否   | 是   | gov:10 | trace-RBZB86-58 | `4823e623` | 1        |
+| 59  | 7,0  | applied | 否   | 是   | gov:10 | trace-RBZB86-59 | `8da2460c` | 1        |
 
 ## 降级说明
 

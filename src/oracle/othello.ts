@@ -8,10 +8,15 @@
  *
  * 断言清单：
  * - OTH1 落子点必须合法（能夹住对方棋子）
- * - OTH2 翻转数量必须与夹住的棋子数一致
+ * - OTH2 落子后的整盘必须与本地投影逐格一致（翻转数量/位置）
  * - OTH3 落子后落点必须是己方棋子
  * - OTH4 棋子总数必须守恒（落子 +1， flips 枚数翻转，总数不变）
  * - OTH5 走子记录长度必须与 moveCount 一致
+ * - OTH6 跳过规则
+ * - OTH7 换人后新执子方必须有合法着
+ * - OTH8 服务端给出的合法动作集必须与本地计算一致
+ * - OTH9 终局 winner 必须与棋子数一致
+ * - OTH10 棋子总数必须等于 4 + moveCount（累计口径）
  */
 
 import type { Action, Observation } from "../types/game.js";
@@ -43,25 +48,66 @@ function boardOf(observation: Observation): Board | null {
   return { grid: raw as number[][] };
 }
 
-/** 计算在 (row,col) 落 player 会翻转的棋子数（独立实现）。 */
-function flipCount(grid: number[][], row: number, col: number, player: number): number {
-  if (grid[row]?.[col] !== EMPTY) return 0;
+/** 计算在 (row,col) 落 player 会翻转的棋子坐标（独立实现）。 */
+function flipsFor(
+  grid: number[][],
+  row: number,
+  col: number,
+  player: number,
+): Array<[number, number]> {
+  if (grid[row]?.[col] !== EMPTY) return [];
   const opp = player === BLACK ? WHITE : BLACK;
-  let total = 0;
+  const flips: Array<[number, number]> = [];
   for (const [dr, dc] of DIRECTIONS) {
+    const line: Array<[number, number]> = [];
     let r = row + dr;
     let c = col + dc;
-    let seen = 0;
     while (r >= 0 && r < 8 && c >= 0 && c < 8 && grid[r]?.[c] === opp) {
-      seen += 1;
+      line.push([r, c]);
       r += dr;
       c += dc;
     }
-    if (seen > 0 && r >= 0 && r < 8 && c >= 0 && c < 8 && grid[r]?.[c] === player) {
-      total += seen;
+    if (line.length > 0 && r >= 0 && r < 8 && c >= 0 && c < 8 && grid[r]?.[c] === player) {
+      flips.push(...line);
     }
   }
-  return total;
+  return flips;
+}
+
+/** 计算在 (row,col) 落 player 会翻转的棋子数（独立实现）。 */
+function flipCount(grid: number[][], row: number, col: number, player: number): number {
+  return flipsFor(grid, row, col, player).length;
+}
+
+/** 本地投影：落子 + 翻转，返回新棋盘（不修改入参）。 */
+function projectBoard(grid: number[][], row: number, col: number, player: number): number[][] {
+  const next = grid.map((line) => [...line]);
+  next[row]![col] = player;
+  for (const [r, c] of flipsFor(grid, row, col, player)) {
+    next[r]![c] = player;
+  }
+  return next;
+}
+
+/** 本地计算某方的全部合法动作 id（格式与适配器一致：`row,col`）。 */
+function legalActionIds(grid: number[][], player: number): string[] {
+  const ids: string[] = [];
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) {
+      if (flipCount(grid, row, col, player) > 0) ids.push(`${row},${col}`);
+    }
+  }
+  return ids.sort();
+}
+
+function countColor(grid: number[][], color: number): number {
+  let n = 0;
+  for (const row of grid) {
+    for (const cell of row) {
+      if (cell === color) n += 1;
+    }
+  }
+  return n;
 }
 
 function countStones(grid: number[][]): number {
@@ -107,6 +153,28 @@ export class OthelloOracle implements Oracle {
         code: "OTH1-illegal-move-accepted",
         severity: "fatal",
         message: `在 (${row},${col}) 落子被接受，但按规则不构成合法着（夹不住任何对方棋子）`,
+        stepNo: null,
+      });
+    }
+
+    // OTH2：落子后的整盘必须与本地投影逐格一致
+    //
+    // 这是比"翻转数量"更强的断言：不仅数量对，翻转位置也必须对。
+    // 本地投影独立重写规则，不复用游戏的 gameLogic。
+    const expectedBoard = projectBoard(beforeBoard.grid, row, col, turn);
+    const mismatched: string[] = [];
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        if (expectedBoard[r]?.[c] !== afterBoard.grid[r]?.[c]) mismatched.push(`(${r},${c})`);
+      }
+    }
+    if (mismatched.length > 0) {
+      violations.push({
+        code: "OTH2-board-projection-mismatch",
+        severity: "fatal",
+        message:
+          `落子后棋盘与本地投影不一致：${mismatched.length} 格不同，` +
+          `例如 ${mismatched.slice(0, 5).join(" ")}`,
         stepNo: null,
       });
     }
@@ -197,6 +265,60 @@ export class OthelloOracle implements Oracle {
         message: `回合切换到 "${after.state.turn}"，但该方无子可下 —— 对局会卡死`,
         stepNo: null,
       });
+    }
+
+    // OTH8：服务端给出的合法动作集必须与本地独立计算一致
+    if (after.state.turn !== null) {
+      const nextPlayer = after.state.turn === "black" ? BLACK : WHITE;
+      const expectedActions = legalActionIds(afterBoard.grid, nextPlayer);
+      const actualActions = after.state.legalActions.map((candidate) => candidate.id).sort();
+      if (
+        expectedActions.length !== actualActions.length ||
+        expectedActions.some((id, index) => id !== actualActions[index])
+      ) {
+        violations.push({
+          code: "OTH8-legal-actions-mismatch",
+          severity: "fatal",
+          message:
+            `合法动作集与本地计算不一致：期望 ${expectedActions.length} 个` +
+            `[${expectedActions.slice(0, 6).join(" ")}]，` +
+            `实际 ${actualActions.length} 个[${actualActions.slice(0, 6).join(" ")}]`,
+          stepNo: null,
+        });
+      }
+    }
+
+    // OTH9：终局 winner 必须与棋子数一致
+    if (after.state.status === "finished") {
+      const blackStones = countColor(afterBoard.grid, BLACK);
+      const whiteStones = countColor(afterBoard.grid, WHITE);
+      const expectedWinner =
+        blackStones > whiteStones ? "black" : whiteStones > blackStones ? "white" : "draw";
+      const actualWinner = after.state.payload["winner"];
+      if (actualWinner !== expectedWinner) {
+        violations.push({
+          code: "OTH9-winner-mismatch",
+          severity: "fatal",
+          message:
+            `终局 winner 与棋子数不一致：黑 ${blackStones} / 白 ${whiteStones} ` +
+            `→ 应为 "${expectedWinner}"，实际 "${String(actualWinner)}"`,
+          stepNo: null,
+        });
+      }
+    }
+
+    // OTH10：棋子总数 === 4 + moveCount（累计口径）
+    const moveCountRaw = after.state.payload["moveCount"];
+    if (typeof moveCountRaw === "number") {
+      const stones = countStones(afterBoard.grid);
+      if (stones !== 4 + moveCountRaw) {
+        violations.push({
+          code: "OTH10-stone-count-mismatch",
+          severity: "fatal",
+          message: `棋子总数 ${stones} ≠ 4 + moveCount(${moveCountRaw}) = ${4 + moveCountRaw}`,
+          stepNo: null,
+        });
+      }
     }
 
     return violations;

@@ -21,6 +21,25 @@ import type { Strategy } from "./strategy.js";
 import type { Decision, Observation } from "../types/game.js";
 
 /**
+ * 模型调用的 token 用量（来源：OpenAI 兼容响应的 `usage`）。
+ */
+export interface LlmUsage {
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+  readonly totalTokens: number;
+}
+
+/**
+ * 模型选择结果。
+ */
+export interface LlmPickResult {
+  /** 选中的动作 id；null 表示模型没有给出可识别的合法动作。 */
+  readonly actionId: string | null;
+  /** 本次调用消耗的 token；响应未带 usage 时不填。 */
+  readonly usage?: LlmUsage;
+}
+
+/**
  * 最小模型客户端契约。
  */
 export interface LlmClient {
@@ -38,7 +57,7 @@ export interface LlmClient {
       readonly payload: Readonly<Record<string, unknown>>;
     }[];
     readonly prompt: string;
-  }): Promise<string | null>;
+  }): Promise<LlmPickResult>;
 }
 
 /**
@@ -52,7 +71,7 @@ export class LlmStrategy implements Strategy {
 
   public constructor(
     private readonly client: LlmClient | null,
-    private readonly timeoutMs = 15_000,
+    private readonly timeoutMs = 60_000,
   ) {}
 
   async decide(params: {
@@ -78,26 +97,30 @@ export class LlmStrategy implements Strategy {
     }
 
     try {
-      const chosenId = await this.withTimeout(
+      const result = await this.withTimeout(
         this.client.pickAction({
           actions: actions.map((a) => ({ id: a.id, payload: a.payload })),
           prompt: this.buildPrompt(observation),
         }),
       );
-      const chosen = actions.find((a) => a.id === chosenId);
+      const chosen = actions.find((a) => a.id === result.actionId);
       if (!chosen) {
         // 模型给了非法动作 → 降级（不静默）
         const base = await this.fallback.decide({ observation, seed });
         return {
           ...base,
           degraded: true,
-          degradedReason: `模型返回的动作 "${chosenId ?? "null"}" 不在合法动作集内，已降级到确定性基线`,
+          degradedReason: `模型返回的动作 "${result.actionId ?? "null"}" 不在合法动作集内，已降级到确定性基线`,
+          ...(result.usage ? { llmTokens: result.usage.totalTokens } : {}),
+          model: this.client.name,
         };
       }
       return {
         action: chosen,
         reason: `模型 ${this.client.name} 选择 ${chosen.id}`,
         degraded: false,
+        ...(result.usage ? { llmTokens: result.usage.totalTokens } : {}),
+        model: this.client.name,
       };
     } catch (error) {
       const base = await this.fallback.decide({ observation, seed });
@@ -109,19 +132,28 @@ export class LlmStrategy implements Strategy {
     }
   }
 
-  /** 构造提示词（只给合法动作，不让模型臆造）。 */
+  /**
+   * 构造提示词。
+   *
+   * 只给**合法动作**，不让模型臆造。棋盘/局面用可读格式，避免 reasoning 模型
+   * 在截断的 JSON 上"分析棋理"把 token 烧完却不给最终 id。
+   */
   private buildPrompt(observation: Observation): string {
     const list = observation.state.legalActions
-      .map((a) => `- ${a.id} ${JSON.stringify(a.payload)}`)
+      .map((a) => `- ${a.id} -> ${JSON.stringify(a.payload)}`)
       .join("\n");
     return [
       "你是一个游戏自动测试 Agent 的决策器。",
-      "请从下面的合法动作中**选一个**并只返回它的 id，不要任何解释。",
+      "任务：只从下面的合法动作里选一个。",
+      "要求：不要分析棋理；不要输出解释；最终只输出一个 id。",
       "",
-      `当前局面摘要：${JSON.stringify(observation.state.payload).slice(0, 800)}`,
+      `当前执子方：${observation.state.turn ?? "无"}`,
+      formatState(observation.state.payload),
       "",
-      "合法动作：",
+      "合法动作（只能选这些）：",
       list,
+      "",
+      "只返回一个 id（例如 2,3），不要返回其他文字。",
     ].join("\n");
   }
 
@@ -142,4 +174,24 @@ export class LlmStrategy implements Strategy {
       if (timer) clearTimeout(timer);
     }
   }
+}
+
+/**
+ * 把局面格式化成模型可读的文本。
+ *
+ * othello：逐行打印棋盘；chess：FEN + moveCount；其他游戏回退到截断 JSON。
+ */
+function formatState(payload: Readonly<Record<string, unknown>>): string {
+  const fen = payload["fen"];
+  if (typeof fen === "string") {
+    return `FEN：${fen}\nmoveCount：${String(payload["moveCount"] ?? "?")}`;
+  }
+
+  const rawBoard = payload["board"];
+  if (Array.isArray(rawBoard) && rawBoard.every((row) => Array.isArray(row))) {
+    const rows = (rawBoard as unknown[][]).map((row, index) => `行${index}: ${row.join(" ")}`);
+    return ["棋盘（0=空，1=黑，2=白；列从左到右 0..7）：", ...rows].join("\n");
+  }
+
+  return `局面：${JSON.stringify(payload).slice(0, 800)}`;
 }

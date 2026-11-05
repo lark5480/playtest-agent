@@ -10,9 +10,10 @@
  * 否则"测试全绿"不代表真实链路成立（违反 AGENTS §4 的"不报错、只是静默不生效"坑形态）。
  */
 
-import { canonicalize } from "../core/fingerprint.js";
+import { computeFingerprint } from "../core/fingerprint.js";
+import { buildIdempotencyKey } from "./idempotency.js";
 
-import type { GovernanceClient, GovernanceResult } from "../types/governance.js";
+import type { GovernanceClient, GovernanceResult, GovernanceUsage } from "../types/governance.js";
 
 /**
  * 内存治理替身。
@@ -30,6 +31,9 @@ export class InMemoryGovernanceClient implements GovernanceClient {
 
   /** 已完成的调用（键 → 终态）。 */
   private readonly done = new Map<string, { readonly tokens: number; readonly traceId: string }>();
+
+  /** 按 session 归集的合成用量（仅用于契约测试与本地降级报告）。 */
+  private readonly usageBySession = new Map<string, Map<number, number>>();
 
   /** 副作用实际执行次数（用于断言"重放没有第二次副作用"）。 */
   public performCount = 0;
@@ -52,6 +56,7 @@ export class InMemoryGovernanceClient implements GovernanceClient {
         replayed: true,
         traceId: existing.traceId,
         tokens: existing.tokens,
+        tokenSource: "synthetic",
       };
     }
 
@@ -61,11 +66,41 @@ export class InMemoryGovernanceClient implements GovernanceClient {
     const traceId = `trace-${params.businessKey}-${params.stepNo}`;
     const tokens = this.tokensPerCall;
     this.done.set(key, { tokens, traceId });
+    const sessionUsage = this.usageBySession.get(params.session) ?? new Map<number, number>();
+    sessionUsage.set(params.stepNo, (sessionUsage.get(params.stepNo) ?? 0) + tokens);
+    this.usageBySession.set(params.session, sessionUsage);
     return {
       businessKey: params.businessKey,
       replayed: false,
       traceId,
       tokens,
+      tokenSource: "synthetic",
+    };
+  }
+
+  async queryUsage(params: {
+    readonly session: string;
+    readonly expectedSteps?: readonly number[];
+    readonly since?: number;
+  }): Promise<GovernanceUsage> {
+    const usage = this.usageBySession.get(params.session);
+    if (!usage) {
+      return {
+        source: "unavailable",
+        byStep: [],
+        unavailableReason: "内存替身没有该 session 的用量记录",
+      };
+    }
+    return {
+      source: "synthetic",
+      byStep: [...usage.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([stepNo, tokens]) => ({
+          stepNo,
+          promptTokens: tokens,
+          completionTokens: 0,
+          tool: "in-memory",
+        })),
     };
   }
 
@@ -80,7 +115,15 @@ export class InMemoryGovernanceClient implements GovernanceClient {
     readonly stepNo: number;
     readonly action: Readonly<Record<string, unknown>>;
   }): string {
-    const actionJson = JSON.stringify(canonicalize(params.action));
-    return [params.businessKey, params.session, String(params.stepNo), actionJson].join("::");
+    // 与真实 aiwarden 共用同一套键构成（businessKey::session::stepNo::digest），
+    // 避免替身和真实实现各拼一套。
+    return buildIdempotencyKey(
+      computeFingerprint({
+        businessKey: params.businessKey,
+        session: params.session,
+        stepNo: params.stepNo,
+        action: { id: "", payload: params.action },
+      }),
+    );
   }
 }

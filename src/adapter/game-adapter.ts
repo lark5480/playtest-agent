@@ -31,7 +31,7 @@ export interface GameAdapter {
    * 从已有凭证恢复一局（用于续跑）。
    *
    * 语义：**不得产生新的副作用** —— 只是把上次的对局接回来。
-   * 不可恢复时返回 null（调用方应重建对局并重放动作）。
+   * 不可恢复时返回 null；驱动会**显式失败并保留检查点**，不自动新开一局。
    */
   resume?(params: { readonly token: string }): Promise<{ readonly state: GameState } | null>;
 
@@ -59,4 +59,22 @@ export interface GameAdapter {
    * 是否已终局。
    */
   isTerminal(params: { readonly state: GameState }): boolean;
+
+  /**
+   * 状态指纹（用于续跑时判断「动作是否已生效」）。
+   *
+   * 默认实现由驱动用 `stateHashOf` 计算（status + turn + payload）。
+   * 若 payload 里有展示用/冗余字段（例如 chess 的 SAN 历史），适配器可覆盖它，
+   * 只把能由 `projectAfter` 稳定投影的字段纳入摘要。
+   */
+  stateDigest?(params: { readonly state: GameState }): string;
+
+  /**
+   * 本地投影执行动作后的状态，**不得产生任何副作用**。
+   *
+   * 只用于续跑判定：崩在「动作已生效、检查点未提交」时，
+   * 驱动用它算出 expectedAfterHash，再与恢复后的真实状态比较。
+   * 返回 null 表示无法投影（非法动作 / 不支持的场景）—— 此时恢复会显式失败。
+   */
+  projectAfter?(params: { readonly state: GameState; readonly action: Action }): GameState | null;
 }

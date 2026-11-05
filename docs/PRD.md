@@ -221,10 +221,10 @@ digest  = sha256(canonicalize({ stepNo, payload })).slice(0, 32)
 
 ### 10.3 两种治理客户端
 
-| 实现                       | 用途                                                          | 状态                                       |
-| -------------------------- | ------------------------------------------------------------- | ------------------------------------------ |
-| `InMemoryGovernanceClient` | 单测 / 契约测试 / 无 Docker 时                                | ✅ 已实现                                  |
-| `AiwardenHttpClient`       | 对接真实 aiwarden（`POST /api/v1/agent/tools/{tool}/invoke`） | ✅ 已实现，**本机未实跑**（Docker 不可用） |
+| 实现                       | 用途                                                                                      | 状态                                                                                    |
+| -------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `InMemoryGovernanceClient` | 单测 / 契约测试 / 无 Docker 时                                                            | ✅ 已实现                                                                               |
+| `AiwardenHttpClient`       | 对接真实 aiwarden（`POST /api/v1/agent/tools/{tool}/invoke` + `GET /api/v1/admin/usage`） | ✅ 已实现，**真实链路已实跑**（2026-11-04；契约 6 实跑 + 3 不适用）；usage 用于成本归因 |
 
 **aiwarden 零改动** —— 只消费既有边界。身份头取自源码常量
 （`X-Aiwarden-Tenant-Id` / `X-Aiwarden-User-Id`），不是猜的。
@@ -280,17 +280,20 @@ Node.js **≥ 24.22.1**（2026-10 Node 安全公告修复线）· TypeScript 5.5
 
 ## 13. 成功标准（每条绑定命令，可复现）
 
-| #   | 标准                 | 命令                                                                         | 期望                                                                                         |
-| --- | -------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| S1  | Agent 自动打完一局   | `npm run playtest -- --scenario smoke`                                       | `passed`，N 步，产出报告                                                                     |
-| S2  | 崩溃注入             | `npm run playtest -- --scenario crash --inject-crash=10`                     | 退出码 3，提示续跑点                                                                         |
-| S3  | 崩溃续跑不重复副作用 | `npm run test:integration`                                                   | 集成用例全绿                                                                                 |
-| S4  | 模型不可用降级       | 无 `AI_API_KEY` 时跑 smoke                                                   | `passed`，报告「降级说明」非空                                                               |
-| S5  | 并发冲突被拒         | `npm run test:integration`                                                   | 两个客户端同房间并发 → 恰好一个被接受，另一个 409                                            |
-| S6  | 静态检查与构建       | `npm run lint && npm run format:check && npm run typecheck && npm run build` | 全绿                                                                                         |
-| S7  | CI 全绿              | 推 PR / push dev                                                             | verify + e2e + integration-games + integration-tongshi + e2e-tongshi 全绿（run 41801302392） |
+| #   | 标准                 | 命令                                                                                                 | 期望                                                                                                                    |
+| --- | -------------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| S1  | Agent 自动打完一局   | `npm run playtest -- --scenario smoke`                                                               | `passed`，N 步，产出报告                                                                                                |
+| S2  | 崩溃注入             | `npm run playtest -- --scenario crash --inject-crash=10 --checkpoint=reports/checkpoints/crash.json` | 退出码 3，打印检查点路径                                                                                                |
+| S3  | 崩溃续跑不重复副作用 | `npm run test:integration:resume`                                                                    | 进程级用例全绿；第 N 步 replayed、同 businessKey、无 failed                                                             |
+| S4  | 模型不可用降级       | 无 `AI_API_KEY` 时跑 smoke                                                                           | `passed`，报告「降级说明」非空                                                                                          |
+| S5  | 并发冲突被拒         | `npm run test:integration`                                                                           | 两个客户端同房间并发 → 恰好一个被接受，另一个 409                                                                       |
+| S6  | 静态检查与构建       | `npm run lint && npm run format:check && npm run typecheck && npm run build`                         | 全绿                                                                                                                    |
+| S7  | CI 全绿              | 推 PR / push dev                                                                                     | verify + e2e + integration-games + integration-tongshi + e2e-tongshi 全绿（上一轮 run 41801302392；本轮改动推送后重跑） |
+| S8  | 报告自证治理证据     | `npm run playtest -- --scenario smoke`                                                               | 报告含 `usage` / `traceId` / `llmTokens` / `governanceTokens` / `tokenSources`；缺失标 unavailable                      |
+| S9  | 多 seed 扫描         | `npm run scan -- --scenario smoke --seeds=1-50 --max-steps=60`                                       | 生成 `reports/scan-*.md/.json`；发现项标注「待人工复核」                                                                |
 
-**完成的定义**：S1–S7 全部可复现，真实输出贴进 README；CI 全绿（含 e2e 与强制的游戏 / tongshi 集成）。
+**完成的定义**：S1–S9 全部可复现，真实输出贴进 README；CI 全绿（含 e2e 与强制的游戏 / tongshi 集成）。
+真实缺陷按裁决 18 不强制，但扫描结论必须如实记录。
 
 ---
 
@@ -300,7 +303,7 @@ Node.js **≥ 24.22.1**（2026-10 Node 安全公告修复线）· TypeScript 5.5
 | ------------- | ------------------------------------------------------------------- | ---------------------------------------------------- |
 | **Stage 0**   | 地基：8 项冻结契约 + 纯函数内核 + SPI + 契约套件                    | ✅ 完成                                              |
 | **Stage 4**   | 驱动层：GameDriver + othello 适配器 + 策略 + Oracle + 报告 + CLI    | ✅ 完成                                              |
-| **Stage 5**   | 治理层：真实 aiwarden 客户端 + 显式降级                             | ✅ 完成（真实链路未实跑）                            |
+| **Stage 5**   | 治理层：真实 aiwarden 客户端 + 显式降级                             | ✅ 完成（真实链路已实跑；usage 查询用于成本归因）    |
 | **Stage 6**   | MVP 验收：命令实跑 + CI 全绿                                        | ✅ 完成（run 41801302392）                           |
 | **Stage 1–3** | 调研 / PRD / 裁决清单                                               | ✅ 完成                                              |
 | **后续 5**    | 真实 aiwarden 链路实跑                                              | ✅ **完成**（7 实跑 + 1 不适用；见 ARCHITECTURE §6） |
@@ -308,7 +311,7 @@ Node.js **≥ 24.22.1**（2026-10 Node 安全公告修复线）· TypeScript 5.5
 | 后续 2        | 场景级预算熔断                                                      | ⏳                                                   |
 | 后续 3        | MCP 通道                                                            | ⏳                                                   |
 | 后续 4        | 报告的跨场景基线 diff                                               | ⏳                                                   |
-| 后续 6        | 真实链路的**续跑**实跑（需把游戏 session 与 aiwarden session 对齐） | ⏳                                                   |
+| 后续 6        | 真实链路的**续跑**实跑（需把游戏 session 与 aiwarden session 对齐） | ✅ 完成（2026-11-05 实跑 30 步，`replayed 1`）       |
 
 ---
 
@@ -341,13 +344,13 @@ Node.js **≥ 24.22.1**（2026-10 Node 安全公告修复线）· TypeScript 5.5
 
 **未决**：
 
-| #   | 问题                                | 何时拍死           | 影响                                                          |
-| --- | ----------------------------------- | ------------------ | ------------------------------------------------------------- |
-| U1  | aiwarden 侧是否注册**游戏动作**工具 | 与 aiwarden 协调时 | 当前用 `create_ticket` 作替身验证管道；真游戏动作工具需其注册 |
-| U2  | ~~本机 Docker 可用性~~              | ✅ 已解决（11-04） | Docker 恢复后真实链路已实跑，见 ARCHITECTURE §6               |
-| U3  | 第二个被测对象选谁                  | 后续 1 开工时      | 需先决定是否给 chess-arena 加只读接口                         |
-| U4  | 场景级预算熔断的具体阈值            | 后续 2 开工时      | 长跑成本控制                                                  |
-| U5  | 真实链路的**续跑**如何对齐 session  | 后续 6 开工时      | 需把游戏 session 与 aiwarden session 绑定，才能验证 `/resume` |
+| #   | 问题                                | 何时拍死                | 影响                                                                           |
+| --- | ----------------------------------- | ----------------------- | ------------------------------------------------------------------------------ |
+| U1  | aiwarden 侧是否注册**游戏动作**工具 | 与 aiwarden 协调时      | 当前用 `create_ticket` 作替身验证管道；真游戏动作工具需其注册                  |
+| U2  | ~~本机 Docker 可用性~~              | ✅ 已解决（11-04）      | Docker 恢复后真实链路已实跑，见 ARCHITECTURE §6                                |
+| U3  | 第二个被测对象选谁                  | 后续 1 开工时           | 需先决定是否给 chess-arena 加只读接口                                          |
+| U4  | 场景级预算熔断的具体阈值            | 后续 2 开工时           | 长跑成本控制                                                                   |
+| U5  | 真实链路的**续跑**如何对齐 session  | ✅ 已解决（2026-11-05） | 同 tenant / session / businessKey 下实跑 30 步，`replayed 1`；检查点保留 token |
 
 ---
 

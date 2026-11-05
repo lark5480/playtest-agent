@@ -7,7 +7,7 @@
  * 密钥纪律：API Key **只从环境变量读取**，不进 bundle、不入日志、不入报告。
  */
 
-import type { LlmClient } from "../strategy/llm.js";
+import type { LlmClient, LlmPickResult, LlmUsage } from "../strategy/llm.js";
 
 export interface OpenAiCompatibleOptions {
   /** 端点（OpenAI 兼容，如 https://api.deepseek.com/v1）。 */
@@ -16,6 +16,8 @@ export interface OpenAiCompatibleOptions {
   readonly model: string;
   /** 单次请求超时（毫秒）。 */
   readonly timeoutMs?: number;
+  /** 单次响应最大 token。reasoning 模型需要给推理留余量。 */
+  readonly maxTokens?: number;
 }
 
 export class OpenAiCompatibleClient implements LlmClient {
@@ -25,12 +27,14 @@ export class OpenAiCompatibleClient implements LlmClient {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly timeoutMs: number;
+  private readonly maxTokens: number;
 
   public constructor(options: OpenAiCompatibleOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.apiKey = options.apiKey;
     this.model = options.model;
-    this.timeoutMs = options.timeoutMs ?? 20_000;
+    this.timeoutMs = options.timeoutMs ?? 60_000;
+    this.maxTokens = options.maxTokens ?? 1024;
     this.name = `openai-compatible:${options.model}`;
   }
 
@@ -40,7 +44,7 @@ export class OpenAiCompatibleClient implements LlmClient {
       readonly payload: Readonly<Record<string, unknown>>;
     }[];
     readonly prompt: string;
-  }): Promise<string | null> {
+  }): Promise<LlmPickResult> {
     const res = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -58,7 +62,7 @@ export class OpenAiCompatibleClient implements LlmClient {
           { role: "user", content: params.prompt },
         ],
         temperature: 0,
-        max_tokens: 64,
+        max_tokens: this.maxTokens,
       }),
       signal: AbortSignal.timeout(this.timeoutMs),
     });
@@ -70,21 +74,62 @@ export class OpenAiCompatibleClient implements LlmClient {
     }
 
     const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
+      choices?: {
+        message?: { content?: string; reasoning_content?: string };
+      }[];
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        total_tokens?: number;
+      };
     };
-    const content = data.choices?.[0]?.message?.content?.trim();
-    if (!content) throw new Error("模型返回内容为空");
+    const usage = usageOf(data.usage);
+    const message = data.choices?.[0]?.message;
+    // 推理模型可能把最终答案放在 content，也可能只有 reasoning_content。
+    const content = message?.content?.trim();
+    const reasoning = message?.reasoning_content?.trim();
+    if (!content && !reasoning) throw new Error("模型返回内容为空");
 
-    // 模型可能回一句解释 —— 取第一个合法动作 id 匹配
-    const cleaned = content.replace(/^["'`]|["'`]$/g, "").trim();
-    const direct = params.actions.find((a) => a.id === cleaned);
-    if (direct) return direct.id;
+    // 依次尝试 content → reasoning：
+    // 1) 整段就是 id；
+    // 2) 文本里提到合法 id 时取**最后出现**的那个（推理模型通常把结论放末尾）。
+    // 任何合法动作都可接受；这里不做棋力判断，只保证不臆造动作。
+    for (const source of [content, reasoning]) {
+      if (!source) continue;
 
-    const mentioned = params.actions.find((a) => content.includes(a.id));
-    if (mentioned) return mentioned.id;
+      const cleaned = source.replace(/^["'`]|["'`]$/g, "").trim();
+      const direct = params.actions.find((a) => a.id === cleaned);
+      if (direct) {
+        return { actionId: direct.id, ...(usage ? { usage } : {}) };
+      }
 
-    return null;
+      const mentioned = params.actions
+        .map((action) => ({ action, index: source.lastIndexOf(action.id) }))
+        .filter((item) => item.index >= 0)
+        .sort((a, b) => b.index - a.index || b.action.id.length - a.action.id.length);
+      if (mentioned.length > 0) {
+        return { actionId: mentioned[0]!.action.id, ...(usage ? { usage } : {}) };
+      }
+    }
+
+    return { actionId: null, ...(usage ? { usage } : {}) };
   }
+}
+
+function usageOf(
+  raw:
+    | {
+        readonly prompt_tokens?: number;
+        readonly completion_tokens?: number;
+        readonly total_tokens?: number;
+      }
+    | undefined,
+): LlmUsage | undefined {
+  if (!raw) return undefined;
+  const promptTokens = raw.prompt_tokens ?? 0;
+  const completionTokens = raw.completion_tokens ?? 0;
+  const totalTokens = raw.total_tokens ?? promptTokens + completionTokens;
+  return { promptTokens, completionTokens, totalTokens };
 }
 
 /**
@@ -97,5 +142,14 @@ export function clientFromEnv(): LlmClient | null {
   const key = process.env.AI_API_KEY?.trim();
   const model = process.env.AI_MODEL?.trim();
   if (!base || !key || !model) return null;
-  return new OpenAiCompatibleClient({ baseUrl: base, apiKey: key, model });
+
+  const maxTokens = Number(process.env.AI_MAX_TOKENS ?? 1024);
+  const timeoutMs = Number(process.env.AI_TIMEOUT_MS ?? 60_000);
+  return new OpenAiCompatibleClient({
+    baseUrl: base,
+    apiKey: key,
+    model,
+    maxTokens: Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 1024,
+    timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 60_000,
+  });
 }

@@ -16,6 +16,10 @@
  * - CHS9 服务端判 fifty 时，本地半回合数必须真的达到 100
  * - CHS10 本地历史已判和，服务端却仍在 playing → 漏判
  * - CHS11 和棋原因与"棋盘实际将死"冲突（将死优先于历史型和棋）
+ * - CHS12 服务端合法着集合必须与本地生成一致
+ * - CHS13 fenHistory 必须连续：长度 = moveCount+1，末项 = 当前 FEN，相邻项可合法转移
+ * - CHS14 子力不足（K vs K / K+B vs K / K+N vs K）不应继续 playing
+ * - CHS15 result 与 status / winner 的口径必须一致
  *
  * 关于"连续 60 步将军"：FIDE 没有这条规则，长将由三次重复 / 50 步覆盖，
  * 因此本 Oracle **不设**以"将军次数"为判据的断言。
@@ -189,6 +193,115 @@ export class ChessOracle implements Oracle {
           code: "CHS10-history-draw-missed",
           severity: "fatal",
           message: `本地历史已判定${local.reason}（重复 ${local.repetitionCount} 次 / 半回合 ${local.halfmoveClock}），服务端仍报 playing`,
+          stepNo: null,
+        });
+      }
+    }
+
+    // CHS12：playing 时，服务端合法着集合必须与本地生成完全一致
+    const afterPos = parseFen(afterFen);
+    const expectedLegal = generateLegalMoves(afterPos).map(moveId).sort();
+    const actualLegal = after.state.legalActions.map((candidate) => candidate.id).sort();
+    if (after.state.status === "playing") {
+      if (
+        expectedLegal.length !== actualLegal.length ||
+        expectedLegal.some((id, index) => id !== actualLegal[index])
+      ) {
+        violations.push({
+          code: "CHS12-legal-actions-mismatch",
+          severity: "fatal",
+          message:
+            `合法着集合与本地生成不一致：期望 ${expectedLegal.length} 个` +
+            `[${expectedLegal.slice(0, 6).join(" ")}]，` +
+            `实际 ${actualLegal.length} 个[${actualLegal.slice(0, 6).join(" ")}]`,
+          stepNo: null,
+        });
+      }
+    } else if (actualLegal.length > 0) {
+      violations.push({
+        code: "CHS12-finished-with-legal-actions",
+        severity: "fatal",
+        message: `对局已 finished，但仍有 ${actualLegal.length} 个合法着`,
+        stepNo: null,
+      });
+    }
+
+    // CHS13：FEN 历史必须连续
+    if (fenHistory) {
+      if (fenHistory.length !== afterCount + 1) {
+        violations.push({
+          code: "CHS13-fen-history-length-mismatch",
+          severity: "fatal",
+          message: `fenHistory 长度 ${fenHistory.length} 与 moveCount+1=${afterCount + 1} 不一致`,
+          stepNo: null,
+        });
+      } else if (fenHistory[fenHistory.length - 1] !== afterFen) {
+        violations.push({
+          code: "CHS13-fen-history-tail-mismatch",
+          severity: "fatal",
+          message: `fenHistory 末项与当前 FEN 不一致：${fenHistory[fenHistory.length - 1]} vs ${afterFen}`,
+          stepNo: null,
+        });
+      } else if (fenHistory.length >= 2) {
+        const previousFen = fenHistory[fenHistory.length - 2]!;
+        const previousPos = parseFen(previousFen);
+        const reachable = generateLegalMoves(previousPos).some(
+          (candidate) => positionToFen(applyMove(previousPos, candidate)) === afterFen,
+        );
+        if (!reachable) {
+          violations.push({
+            code: "CHS13-fen-history-not-reachable",
+            severity: "fatal",
+            message: `fenHistory 最后一步无法由合法着从上一局面到达：${previousFen} → ${afterFen}`,
+            stepNo: null,
+          });
+        }
+      }
+    }
+
+    // CHS14：子力不足时不应继续 playing
+    if (after.state.status === "playing" && isInsufficientMaterial(afterPos)) {
+      violations.push({
+        code: "CHS14-insufficient-material-not-drawn",
+        severity: "fatal",
+        message: "棋盘已只剩王 / 王+单马 / 王+单象，按规则应判和，但状态仍是 playing",
+        stepNo: null,
+      });
+    }
+
+    // CHS15：result 与 status / winner 的口径一致
+    const finalResult = resultOf(after);
+    if (after.state.status === "playing" && finalResult) {
+      violations.push({
+        code: "CHS15-result-while-playing",
+        severity: "fatal",
+        message: `状态仍是 playing，但 payload.result 已存在（reason=${finalResult.reason}）`,
+        stepNo: null,
+      });
+    }
+    if (finalResult) {
+      const drawReasons = new Set([
+        "stalemate",
+        "threefold",
+        "fifty",
+        "fifty-move",
+        "insufficient",
+        "insufficient-material",
+        "draw",
+      ]);
+      if (drawReasons.has(finalResult.reason) && finalResult.winner !== null) {
+        violations.push({
+          code: "CHS15-draw-with-winner",
+          severity: "fatal",
+          message: `result.reason 为和棋（${finalResult.reason}），但 winner 是 "${finalResult.winner}"`,
+          stepNo: null,
+        });
+      }
+      if (finalResult.reason === "checkmate" && finalResult.winner === null) {
+        violations.push({
+          code: "CHS15-checkmate-without-winner",
+          severity: "fatal",
+          message: "result.reason 为 checkmate，但 winner 为 null",
           stepNo: null,
         });
       }
@@ -369,4 +482,22 @@ function applyTo(position: ChessPosition, move: ChessMove): ChessPosition {
 
 function colorName(color: ChessColor): "white" | "black" {
   return color === "w" ? "white" : "black";
+}
+
+/**
+ * 子力不足判和的最小集合：K vs K、K+B vs K、K+N vs K。
+ *
+ * 不扩展到"同色格象"等更细的 FIDE 条款 —— 本项目只对**无争议**的三种做硬判，
+ * 避免把被测游戏的合理实现差异当成缺陷。
+ */
+function isInsufficientMaterial(position: ChessPosition): boolean {
+  const nonKings = position.board.filter(
+    (piece): piece is NonNullable<typeof piece> => piece !== null && piece.type !== "k",
+  );
+  if (nonKings.length === 0) return true;
+  if (nonKings.length === 1) {
+    const type = nonKings[0]!.type;
+    return type === "b" || type === "n";
+  }
+  return false;
 }

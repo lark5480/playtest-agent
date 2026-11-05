@@ -28,14 +28,24 @@ function observation(over: Partial<GameState> = {}, seq = 0): Observation {
 }
 
 test("同 seed + 同局面 → 同动作", async () => {
-  // 策略的 PRNG 是**有状态**的：同一实例连续调用会推进序列。
-  // 因此"同局面同动作"的准确表述是：同一 seed 的两个独立实例，
-  // 在各自的第一步上必须给出相同动作。
+  // 策略是**无状态**的：每步只由 (seed, observation.seq) 派生 PRNG。
+  // 两个独立实例在同一局面/同一 seq 上必须给出相同动作。
   const a = new HeuristicStrategy();
   const b = new HeuristicStrategy();
   const da = await a.decide({ observation: observation(), seed: 42 });
   const db = await b.decide({ observation: observation(), seed: 42 });
   assert.equal(da.action?.id, db.action?.id);
+});
+
+test("策略无状态：新实例从中间 seq 继续 → 与连续运行同一动作", async () => {
+  const continuous = new HeuristicStrategy();
+  await continuous.decide({ observation: observation({}, 0), seed: 42 });
+  await continuous.decide({ observation: observation({}, 1), seed: 42 });
+  const expected = await continuous.decide({ observation: observation({}, 2), seed: 42 });
+
+  const fresh = new HeuristicStrategy();
+  const actual = await fresh.decide({ observation: observation({}, 2), seed: 42 });
+  assert.equal(actual.action?.id, expected.action?.id, "续跑不应因 PRNG 内部状态丢失而换动作");
 });
 
 test("异局面 → 可能不同动作（探索性）", async () => {

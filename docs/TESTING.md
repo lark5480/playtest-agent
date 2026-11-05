@@ -48,29 +48,39 @@
 
 ### 治理契约（`tests/contract/governance.contract.ts`）
 
-| #   | 用例                                  | 断言什么                       | 真实实现适用  |
-| --- | ------------------------------------- | ------------------------------ | ------------- |
-| 1   | 首次调用执行副作用且 `replayed=false` | 首次不丢动作                   | ✅            |
-| 2   | 同键重放不产生第二次副作用            | **幂等语义**（承诺 C3 的地基） | ✅            |
-| 3   | 不同步号不互相命中                    | 键含 stepNo                    | ✅            |
-| 4   | 不同 session 不互相命中               | 键含 session                   | ✅            |
-| 5   | 同一步不同动作不互相命中              | 键含动作内容（否则漏动作）     | ✅            |
-| 6   | 动作内容键序不同视为同一动作          | 语义相同 → 同键                | ✅            |
-| 7   | 返回 traceId                          | 能与治理侧 trace 串联          | ❌ **不适用** |
-| 8   | 重放的 tokens 与首次一致              | 成本不重复计入                 | ✅            |
+| #   | 用例                                  | 断言什么                       | 真实实现适用         |
+| --- | ------------------------------------- | ------------------------------ | -------------------- |
+| 1   | 首次调用执行副作用且 `replayed=false` | 首次不丢动作                   | ✅                   |
+| 2   | 同键重放不产生第二次副作用            | **幂等语义**（承诺 C3 的地基） | ✅                   |
+| 3   | 不同步号不互相命中                    | 键含 stepNo                    | ✅                   |
+| 4   | 不同 session 不互相命中               | 键含 session                   | ✅                   |
+| 5   | 同一步不同动作不互相命中              | 键含动作内容（否则漏动作）     | ✅                   |
+| 6   | 动作内容键序不同视为同一动作          | 语义相同 → 同键                | ✅                   |
+| 7   | 返回 traceId                          | 能与治理侧 trace 串联          | ❌ **不适用**        |
+| 8   | 单次调用返回 tokens                   | 同步成本口径的实现必须返回数值 | ❌ **专用 usage 测** |
+| 9   | 按 session 查询用量                   | 重放不重复计入成本             | ❌ **专用 usage 测** |
 
-> **第 7 条对真实实现「不适用」**：真实 aiwarden 的 `ToolInvokeResponse` 没有 traceId 字段
-> （traceId 属于 session 层）。契约框架用 `inMemoryOnly` 标记它，
-> 对真实实现**显式跳过并注明原因**——不是删断言，也不是改成"通过"
-> （见 [`decisions/00-PRD修订裁决清单.md`](decisions/00-PRD修订裁决清单.md) 裁决 23）。
+> 第 7 条对真实实现「不适用」：真实 aiwarden 的 `ToolInvokeResponse` 没有 traceId 字段
+> （traceId 属于 session 层）。第 8/9 条对真实实现也不适用：它的成本走
+> `GET /api/v1/admin/usage` 异步查询，由
+> [`tests/integration/aiwarden-usage.test.ts`](../tests/integration/aiwarden-usage.test.ts)
+> 专门覆盖（真实服务、唯一 session、Kafka 落库轮询）。
+>
+> 真实 aiwarden 的治理契约因此是 **6 实跑 + 3 显式不适用**；加上 usage 专用测试，
+> 成本链路仍有真实覆盖。**不适用 ≠ 通过**，报告与文档都按这个口径写。
+> 2026-11-05 本机已启动 aiwarden 并实跑：契约 + usage 共 **7 通过 + 3 显式不适用**。
+> 注意：aiwarden 未配置租户当月预算时，工具调用当量按设计记 **0**；
+> usage 测试验证「能按 step 查到记录、重放不重复计入」，不把 0 当成失败。
+> 要看到 100/次，需要先配置 `t_budget`（或在管理面设置预算）。
+> CLI 查询 usage 时会带 `since=run.startedAt`，同 session 的历史运行不会混进本次报告。
 
 ### 真实链路的额外约束（实跑踩过的坑）
 
-| 坑                              | 原因                                                                            | 修法                                                             |
-| ------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| 租户标识被拒（HTTP 400）        | aiwarden 的 `tenant_id` 是 `long`，非数值直接拒绝                               | 用**数值字符串**，默认 `"1"`                                     |
-| **不同 session 的动作互相吞掉** | `create_ticket` 用 `orderRef` 做唯一约束，客户端只传了 `digest`（不含 session） | `orderRef` 传**完整幂等键**（businessKey:session:stepNo:digest） |
-| 键序不同的同一动作被当成两个    | 服务端只对**顶层** Map 排序，嵌套不保证                                         | 客户端先 `canonicalize` 再写入                                   |
+| 坑                              | 原因                                                                            | 修法                                                                |
+| ------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| 租户标识被拒（HTTP 400）        | aiwarden 的 `tenant_id` 是 `long`，非数值直接拒绝                               | 用**数值字符串**，默认 `"1"`                                        |
+| **不同 session 的动作互相吞掉** | `create_ticket` 用 `orderRef` 做唯一约束，客户端只传了 `digest`（不含 session） | `orderRef` 传**完整幂等键**（businessKey::session::stepNo::digest） |
+| 键序不同的同一动作被当成两个    | 服务端只对**顶层** Map 排序，嵌套不保证                                         | 客户端先 `canonicalize` 再写入                                      |
 
 **测试数据必须用唯一键**：真实实现会把调用终态持久化，用固定键跑第二次会命中旧终态
 → `replayed: true` → 副作用不再执行 → 用例看起来"失败"，实际是**数据污染**。
@@ -86,33 +96,45 @@ cd ../othello-online && npm run build && npm run preview   # :5173
 
 # 1) Agent 自动打完一局
 npm run playtest -- --scenario smoke
-#    期望：完整 StepRecord 链 + reports/smoke-<ts>.md 与 .json
+#    期望：完整 StepRecord 链 + reports/smoke-<ts>.md / .json / .html
 
-# 2) 崩溃续跑不重复副作用
-npm run playtest -- --scenario crash --inject-crash=after-action
-#    期望：续跑后动作总数与未崩溃基线逐项相等（diff 为空）
+# 2) 崩溃续跑（检查点 + pending 意图）
+npm run playtest -- --scenario crash --inject-crash=10 \
+  --checkpoint=reports/checkpoints/crash.json
+npm run playtest -- --resume=reports/checkpoints/crash.json
+#    期望：退出码 3 → 续跑；第 10 步记 replayed、同 businessKey、无 failed 步
+#    进程级验证（自带假服务，CI verify 也跑）：
+npm run test:integration:resume
 
 # 3) 模型不可用降级
 AI_API_KEY= npm run playtest -- --scenario smoke
 #    期望：仍跑完，报告标注"本段由确定性基线驱动"
 
-# 4) 治理证据落库
-#    期望：aiwarden 的 t_agent_step / t_llm_call_log 有该 session 记录，四维齐全
+# 4) 治理成本与 usage
+PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://localhost:8080 \
+  AIWARDEN_ADMIN_USER_ID=1 npm run test:integration:aiwarden
+#    期望：usage 接口能按 session/step 查到数值；重放不重复计入
+
+# 5) 多 seed 扫描（Oracle 加强后再跑一轮）
+npm run scan -- --scenario smoke --seeds=1-50 --max-steps=60
+#    期望：生成 reports/scan-<scenario>-<ts>.md/.json；发现项需人工复核
 ```
 
 **完成的判定**（避免"做完了就算数"）：
 
 - 上述命令**全部可复现**，真实输出贴进 README；
-- 至少**发现并修复一个真实缺陷**（不是植入的假缺陷）——
-  若一个都没有，说明断言不够强，需加强 Oracle 再验；
-- CI 全绿：`verify` 与真实链路各 job 全部通过；aiwarden 集成在未配置外部地址时按设计 Skipped
+- **真实缺陷**：按裁决 18，不强制要求发现缺陷；若扫描为零，必须如实记录
+  seed 区间、步数、断言覆盖与产物路径；若扫描有发现，先排除 Oracle 误报
+  再记为游戏缺陷，**不伪造、不夸大**；
+- CI 全绿：`verify`（含进程级续跑）与真实链路各 job 全部通过；
+  aiwarden 集成在未配置外部地址时按设计 Skipped
   （job 清单见 README 的「CI 侧相关 job」表，不在此重复维护）。
 
 ### e2e-tongshi 的启动约定
 
-`e2e-tongshi` job **不得预启动 3100 服务**：测试服务由 tongshi-ju 的 Playwright `webServer` 自己起，
-并跑干净构建（不设 `CI: ""` 之类的绕过）。我们的 job 必须与 tongshi-ju 自身 CI 同形：
-`NEXT_DIST_DIR: .next-e2e` → `npm run build` → `npx playwright test`。
+`e2e-tongshi` job 先起 3100 的 `next start`，再显式 `CI: ""` 让 Playwright
+复用该实例（`playwright.config.ts` 的 `reuseExistingServer: !process.env.CI`），
+**不另起 dev server 撞端口**。这一步与 ci.yml 的实际写法保持一致。
 上游若变更 `E2E_PORT` / `NEXT_DIST_DIR` 等约定，我们跟随对齐，**不在 agent 侧放宽断言或跳过 job**
 （背景：上游 `01b8c96` 在配置加载阶段检查端口，占用即 `exit(1)`）。
 
@@ -131,12 +153,17 @@ Oracle 跑在**被测游戏之外**，是**独立实现**，不复用被测游�
 
 ## 6. 确定性要求
 
-| 场景 | 要求                                                |
-| ---- | --------------------------------------------------- |
-| 策略 | 同 seed + 同局面 → 同动作。不得用真随机 / 时间      |
-| PRNG | 自实现 mulberry32，种子写进报告                     |
-| 指纹 | 只吃 `{ stepNo, payload }`，不吃时间 / 随机 / id    |
-| 报告 | 纯渲染，同样步骤序列必得同样字节（可 diff、可入库） |
+| 场景 | 要求                                                                  |
+| ---- | --------------------------------------------------------------------- |
+| 策略 | 同 seed + 同局面 → 同动作。不得用真随机 / 时间                        |
+| PRNG | 自实现 mulberry32；**无状态**：每步由 `seed + observation.seq` 派生   |
+| 指纹 | 只吃 `{ stepNo, payload }`，不吃时间 / 随机 / id                      |
+| 报告 | 纯渲染，同样步骤序列必得同样字节（可 diff、可入库）                   |
+| 续跑 | 检查点存 pending 意图 + before/expectedAfter 哈希；不重新决策已定动作 |
+
+> PRNG 无状态是续跑确定性的前提：有状态 PRNG 的序列依赖"从第 0 步一路走来"，
+> 新进程续跑时内部状态已丢。按 `(seed, observation.seq)` 派生后，
+> 续跑与独立运行的后续动作序列一致（裁决 27）。
 
 ---
 
@@ -144,8 +171,11 @@ Oracle 跑在**被测游戏之外**，是**独立实现**，不复用被测游�
 
 发现项的 `code` 必须**稳定**（跨次运行可对照），格式：
 
-- 通用断言：`G<n>-<描述>`（如 `G1-turn-did-not-alternate`）
-- 游戏特异断言：`<游戏缩写><n>-<描述>`（如 `OTH3-flip-count-mismatch`）
+- 通用断言：`G<n>-<描述>`（如 `G1-new-turn-has-no-legal-moves`）
+- othello：`OTH<n>-<描述>`（OTH1–OTH10，含整盘投影、合法集、winner、累计棋子数）
+- chess：`CHS<n>-<描述>`（CHS1–CHS15，含合法集、FEN 历史连续性、子力不足、result 口径）
+- 治理重放相关：`G6-replayed-observation-unavailable`、
+  `G7-governance-replayed-before-game-state`（补偿执行并如实记录）
 
 报告编号体系与 `othello-online/tests/playtest/smoke-checklist.md` 对齐 ——
 机器结果能直接接人工观察表。

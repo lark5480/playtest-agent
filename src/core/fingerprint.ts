@@ -83,6 +83,9 @@ export function computeFingerprint(params: {
 
 /**
  * 指纹的稳定字符串形式（用于日志、报告与幂等键拼接）。
+ *
+ * 格式：`{businessKey}::{session}::{stepNo}::{digest}`
+ * 用 `::` 分隔 —— 业务键本身可能含冒号，双冒号降低歧义。
  */
 export function fingerprintKey(fingerprint: IdempotencyFingerprint): string {
   return [
@@ -90,5 +93,5 @@ export function fingerprintKey(fingerprint: IdempotencyFingerprint): string {
     fingerprint.session,
     String(fingerprint.stepNo),
     fingerprint.digest,
-  ].join(":");
+  ].join("::");
 }

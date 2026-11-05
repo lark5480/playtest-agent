@@ -49,7 +49,8 @@ PRNG / 指纹 / 报告 / 洗牌**全部自实现**，不引游戏 / 随机 / 日
 ### 2.6 凭证纪律
 
 `playerId` / `token` 是对局写操作的唯一凭证，**绝不能出现在日志、报告、对外数据里**。
-凭证只进幂等键（作为 businessKey 的一部分）。
+凭证只进幂等键（作为 businessKey 的一部分）。续跑检查点会保存 token，
+**只允许落在 gitignore 的 `reports/checkpoints/`**，同样不进日志与报告。
 
 ### 2.7 不记录密钥
 
@@ -79,7 +80,7 @@ docs/
 ├─ TESTING.md        测试约定与验收判据
 ├─ research/         带日期的一次性调研快照（**不回改**）
 └─ decisions/        裁决清单（编号顺延追加）
-scenarios/           场景定义
+scenarios/           预留的外部场景目录（当前未接入；内置场景在 src/scenarios/registry.ts）
 reports/             产出报告（**不入库**）
 ```
 
@@ -93,7 +94,10 @@ npm run typecheck        # tsc --noEmit
 npm test                 # 单元测试
 npm run test:contract    # 契约测试（适配器 / 治理实现必过）
 npm run test:integration # 集成测试
+npm run test:integration:resume  # 进程级崩溃续跑（自带假服务）
 npm run playtest -- --scenario smoke   # 跑一局
+npm run scan -- --scenario smoke --seeds=1-50   # 多 seed 扫描
+npm run report:html -- --file=reports/xxx.json  # 已有报告 → 自包含 HTML
 npm run lint && npm run format:check
 npm run build
 ```
@@ -134,7 +138,7 @@ npm run build
 改动一律在 `dev` 上做 → 提 PR → 合入 `master`；**不直推 `master`、不 force-push**。
 
 **CI**：push / PR 到 `master` / `main` / `dev` 均触发；
-`verify`（lint / format / typecheck / 单测 / 契约 / 构建）→ `e2e`（真实跑一局）
+`verify`（lint / format / typecheck / 单测 / 契约 / **进程级续跑** / 构建）→ `e2e`（真实跑一局）
 → `integration-games` / `integration-tongshi` / `e2e-tongshi`（强制真实服务），
 细节以 `.github/workflows/ci.yml` 为准。**CI 绿灯 = 可合并判据**。
 

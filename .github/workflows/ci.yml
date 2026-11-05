@@ -51,6 +51,10 @@ jobs:
       - name: Contract tests
         run: npm run test:contract
 
+      # 真进程崩溃续跑：自带 othello 假服务，不依赖外部进程。
+      - name: Crash resume (process level)
+        run: npm run test:integration:resume
+
       - name: Production build
         run: npm run build
 
@@ -237,6 +241,7 @@ jobs:
         env:
           PLAYTEST_REQUIRE_INTEGRATION: "1"
           AIWARDEN_BASE_URL: ${{ vars.AIWARDEN_BASE_URL }}
+          AIWARDEN_ADMIN_USER_ID: "1"
         run: npm run test:integration:aiwarden
 
   # tongshi-ju 是答题类应用，没有"轮次/对手"语义，因此不接 GameAdapter，

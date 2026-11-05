@@ -34,12 +34,16 @@ function observation(
   } = {},
 ): Observation {
   const status = params.status ?? "playing";
+  const defaultLegalActions =
+    status === "finished"
+      ? []
+      : generateLegalMoves(position).map((move) => ({ id: moveId(move), payload: {} }));
   return {
     state: {
       id: "R00001",
       status,
       turn: status === "finished" ? null : position.turn === "w" ? "white" : "black",
-      legalActions: params.legalActions ?? [{ id: "dummy", payload: { from: "a1", to: "a2" } }],
+      legalActions: params.legalActions ?? defaultLegalActions,
       payload: {
         fen: positionToFen(position),
         moveCount: (params.moves ?? []).length,
@@ -263,4 +267,128 @@ test("棋盘实际是将死却判和 → CHS11", () => {
     outcome: "applied",
   });
   assert.ok(violations.some((v) => v.code === "CHS11-draw-vs-checkmate"));
+});
+
+test("合法集与本地不一致 → CHS12", () => {
+  const before = observation(startPosition());
+  const after = observation(play(startPosition(), ["e2e4"]), {
+    moves: ["e2e4"],
+    legalActions: [],
+  });
+  const violations = new ChessOracle().assert({
+    before,
+    after,
+    action: assertMove("e2e4", "e2", "e4"),
+    outcome: "applied",
+  });
+  assert.ok(violations.some((v) => v.code === "CHS12-legal-actions-mismatch"));
+});
+
+test("fenHistory 长度不对 → CHS13", () => {
+  const start = startPosition();
+  const history = playHistory(start, ["e2e4"]);
+  const afterPos = play(start, ["e2e4"]);
+  const violations = new ChessOracle().assert({
+    before: observation(start),
+    after: observation(afterPos, {
+      moves: ["e2e4"],
+      fenHistory: [history[0]!],
+    }),
+    action: assertMove("e2e4", "e2", "e4"),
+    outcome: "applied",
+  });
+  assert.ok(violations.some((v) => v.code === "CHS13-fen-history-length-mismatch"));
+});
+
+test("fenHistory 末项与当前 FEN 不一致 → CHS13", () => {
+  const start = startPosition();
+  const history = playHistory(start, ["e2e4"]);
+  const afterPos = play(start, ["e2e4"]);
+  const violations = new ChessOracle().assert({
+    before: observation(start),
+    after: observation(afterPos, {
+      moves: ["e2e4"],
+      fenHistory: [history[0]!, history[0]!],
+    }),
+    action: assertMove("e2e4", "e2", "e4"),
+    outcome: "applied",
+  });
+  assert.ok(violations.some((v) => v.code === "CHS13-fen-history-tail-mismatch"));
+});
+
+test("fenHistory 相邻两步无法一步到达 → CHS13", () => {
+  const start = startPosition();
+  const e4History = playHistory(start, ["e2e4"]);
+  const d4History = playHistory(start, ["d2d4"]);
+  const afterPos = play(start, ["e2e4"]);
+  const violations = new ChessOracle().assert({
+    before: observation(start),
+    after: observation(afterPos, {
+      moves: ["e2e4"],
+      fenHistory: [d4History[1]!, e4History[1]!],
+    }),
+    action: assertMove("e2e4", "e2", "e4"),
+    outcome: "applied",
+  });
+  assert.ok(violations.some((v) => v.code === "CHS13-fen-history-not-reachable"));
+});
+
+test("子力不足仍 playing → CHS14", () => {
+  const beforePos = parseFen("8/8/8/8/8/8/8/K6k w - - 0 1");
+  const move = generateLegalMoves(beforePos).find((candidate) => moveId(candidate) === "a1a2");
+  assert.ok(move, "K vs K 局面应有 a1a2");
+  const afterPos = applyMove(beforePos, move);
+
+  const violations = new ChessOracle().assert({
+    before: observation(beforePos),
+    after: observation(afterPos, { moves: ["a1a2"] }),
+    action: assertMove("a1a2", "a1", "a2"),
+    outcome: "applied",
+  });
+  assert.ok(violations.some((v) => v.code === "CHS14-insufficient-material-not-drawn"));
+});
+
+test("playing 却带 result → CHS15", () => {
+  const violations = new ChessOracle().assert({
+    before: observation(startPosition()),
+    after: observation(play(startPosition(), ["e2e4"]), {
+      moves: ["e2e4"],
+      result: { winner: "white", reason: "checkmate" },
+    }),
+    action: assertMove("e2e4", "e2", "e4"),
+    outcome: "applied",
+  });
+  assert.ok(violations.some((v) => v.code === "CHS15-result-while-playing"));
+});
+
+test("和棋原因却带 winner → CHS15", () => {
+  const start = startPosition();
+  const violations = new ChessOracle().assert({
+    before: observation(start),
+    after: observation(play(start, ["e2e4"]), {
+      status: "finished",
+      moves: ["e2e4"],
+      legalActions: [],
+      result: { winner: "white", reason: "stalemate" },
+    }),
+    action: assertMove("e2e4", "e2", "e4"),
+    outcome: "applied",
+  });
+  assert.ok(violations.some((v) => v.code === "CHS15-draw-with-winner"));
+});
+
+test("checkmate 却没有 winner → CHS15", () => {
+  const start = startPosition();
+  const violations = new ChessOracle().assert({
+    before: observation(start),
+    after: observation(play(start, ["e2e4"]), {
+      status: "finished",
+      moves: ["e2e4"],
+      legalActions: [],
+      result: { winner: null, reason: "checkmate" },
+    }),
+    action: assertMove("e2e4", "e2", "e4"),
+    outcome: "applied",
+  });
+  assert.ok(violations.some((v) => v.code === "CHS15-checkmate-without-winner"));
 });

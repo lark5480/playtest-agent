@@ -18,8 +18,28 @@ export interface GovernanceResult {
   readonly traceId?: string;
   /** 本次调用消耗的 token 数。 */
   readonly tokens?: number;
+  /** token 数的来源口径。 */
+  readonly tokenSource?: "model-usage" | "governance-usage" | "synthetic" | "unavailable";
+  /** 未取得成本时的显式原因。 */
+  readonly tokensUnavailableReason?: string;
   /** 治理拒绝原因（被拒绝时）。 */
   readonly deniedReason?: string;
+}
+
+/** 治理侧按步骤汇总的用量。 */
+export interface GovernanceUsageEntry {
+  readonly stepNo: number;
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+  readonly tool: string;
+}
+
+/** 治理侧的 session 用量查询结果。 */
+export interface GovernanceUsage {
+  readonly source: "governance-usage" | "synthetic" | "unavailable";
+  readonly byStep: readonly GovernanceUsageEntry[];
+  /** source 为 unavailable 时必填，说明为什么拿不到。 */
+  readonly unavailableReason?: string;
 }
 
 /**
@@ -50,6 +70,20 @@ export interface GovernanceClient {
     /** 真正的副作用执行（由适配器提供；治理层只做记账与裁决）。 */
     readonly perform: () => Promise<void>;
   }): Promise<GovernanceResult>;
+
+  /**
+   * 按 session 查询治理侧成本明细。
+   *
+   * 真实 aiwarden 的用量是异步落库的，实现方应做有限轮询；
+   * 传入 `expectedSteps` 时应轮询到这些步都出现（或超时），
+   * 拿不到时返回 `source: "unavailable"`，**不得用 0 冒充**。
+   */
+  queryUsage?(params: {
+    readonly session: string;
+    readonly expectedSteps?: readonly number[];
+    /** 只统计该时间点之后的用量（毫秒时间戳）；用于隔离同 session 的历史运行。 */
+    readonly since?: number;
+  }): Promise<GovernanceUsage>;
 
   /**
    * 从最近检查点续跑。
