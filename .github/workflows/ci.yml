@@ -305,16 +305,20 @@ jobs:
           TONGSHI_JU_DIR: tongshi-ju
         run: npm run test:integration:tongshi
 
-  # 复用 tongshi-ju 自带的 Playwright 套件（actor 侧不引入 Playwright 依赖）。
+  # 直接跑 tongshi-ju 自带的 Playwright 套件（actor 侧不引入 Playwright 依赖）。
   # duel.spec.ts 自带 420s 超时，因此 job 单独给 15 分钟，不靠放宽掩盖。
-  # 注意：playwright.config.ts 里 `reuseExistingServer: !process.env.CI`，
-  # CI 模式会再起一个 dev server 撞 3100，所以这一步显式清空 CI，
-  # 让 Playwright 复用上面已经启动的 next start 实例。
+  # 服务由 Playwright 的 webServer 自己起：上游 01b8c96 起 `reuseExistingServer: false`，
+  # 并在配置加载阶段检查端口，3100 被占就直接报错。本 job 不再预启动服务，
+  # 否则等于和上游的“干净测试服务”策略对撞。
   e2e-tongshi:
     name: E2E · tongshi-ju (Playwright)
     runs-on: ubuntu-latest
     needs: verify
     timeout-minutes: 15
+    env:
+      # 与 playwright.config.ts 的 webServer.env 指向同一个目录：
+      # 这里的 build 写进去，CI 模式下 Playwright 用 next start 读出来。
+      NEXT_DIST_DIR: .next-e2e
 
     steps:
       - name: Checkout
@@ -336,36 +340,19 @@ jobs:
         working-directory: tongshi-ju
         run: npm ci
 
-      - name: Build tongshi-ju
-        working-directory: tongshi-ju
-        run: npm run build
-
-      - name: Start tongshi-ju (3100)
-        working-directory: tongshi-ju
-        run: PORT=3100 npm start &
-        env:
-          BROWSER: none
-
-      - name: Wait for tongshi-ju
-        run: |
-          for i in $(seq 1 45); do
-            if curl -sf http://localhost:3100/ >/dev/null; then
-              echo "tongshi-ju is up"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "tongshi-ju did not start"
-          exit 1
-
       - name: Install Playwright browser
         working-directory: tongshi-ju
         run: npx playwright install --with-deps chromium
 
-      # 失败即红：不跳过、不重试兜底。4+1 分轨若未同步 daily.spec.ts 的断言，
+      # 跑构建产物而不是 next dev：dev 首个请求要先编译，冷启动 runner 上
+      # duel 首个选项曾在 40s 内不可见。产物目录与 Playwright 的 webServer.env 一致。
+      - name: Build for e2e
+        working-directory: tongshi-ju
+        run: npm run build
+
+      # 失败即红：不跳过、不放宽断言。4+1 分轨若未同步 daily.spec.ts 的断言，
       # 这里会如实变红（属于被测仓库的口径问题，不在 agent 侧放宽）。
+      # 保留 CI=true：上游据此执行 next start（生产构建），并由 webServer 自己起服务。
       - name: Run Playwright suites
         working-directory: tongshi-ju
-        env:
-          CI: ""
         run: npx playwright test
