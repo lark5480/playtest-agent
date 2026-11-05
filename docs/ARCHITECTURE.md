@@ -50,12 +50,20 @@ types  ←  core  ←  adapter / strategy / oracle / governance
 冻结契约**只增不改**：新增字段是允许的（向后兼容），改既有字段语义不允许。
 以下为冻结后新增的字段，均为**可选**（不传时行为与冻结时一致）：
 
-| 契约 | 新增项                        | 何时加的 | 为什么                                                               |
-| ---- | ----------------------------- | -------- | -------------------------------------------------------------------- |
-| ⑧    | `steps[].degradedReason`      | Stage 5  | 承诺 C4 要求降级**可追溯** —— 只标 `degraded: true` 说不清为什么降级 |
-| ⑧    | `governanceSource`            | Stage 5  | 区分"真实 aiwarden 链路"与"内存替身降级"，否则报告无法自证证据等级   |
-| ⑧    | `governanceDegradedReason`    | Stage 5  | 同上，写明降级原因                                                   |
-| ④    | `GameAdapter.resume?`（可选） | Stage 4  | 续跑需要"从凭证恢复对局"；不实现该方法的适配器照常工作               |
+| 契约 | 新增项                                                                          | 何时加的   | 为什么                                                               |
+| ---- | ------------------------------------------------------------------------------- | ---------- | -------------------------------------------------------------------- |
+| ①    | `Decision.llmTokens` / `Decision.model`                                         | 2026-11-05 | 模型 usage 要能进入报告，不能只留在内存对象里                        |
+| ②    | `StepRecord.llmTokens` / `model`；`GovernanceEvidence.tokenSource` 等           | 2026-11-05 | 成本来源必须可区分（模型 / 治理 / 合成 / 不可用）                    |
+| ④    | `GameAdapter.stateDigest?` / `projectAfter?`                                    | 2026-11-05 | 续跑判定需要"状态指纹 + 本地投影"；不实现的适配器照常工作            |
+| ⑦    | `GovernanceClient.queryUsage?`；`GovernanceResult.tokenSource` 等               | 2026-11-05 | 真实成本按 session 查询；拿不到时显式 unavailable，不填 0            |
+| ⑧    | `steps[].degradedReason`                                                        | Stage 5    | 承诺 C4 要求降级**可追溯** —— 只标 `degraded: true` 说不清为什么降级 |
+| ⑧    | `governanceSource`                                                              | Stage 5    | 区分"真实 aiwarden 链路"与"内存替身降级"，否则报告无法自证证据等级   |
+| ⑧    | `governanceDegradedReason`                                                      | Stage 5    | 同上，写明降级原因                                                   |
+| ⑧    | `steps[].traceId` / `llmTokens` / `governanceTokens` / `tokenSources` / `usage` | 2026-11-05 | 报告必须能自证治理证据；只增可选字段，`schemaVersion` 仍为 1         |
+| ④    | `GameAdapter.resume?`（可选）                                                   | Stage 4    | 续跑需要"从凭证恢复对局"；不实现该方法的适配器照常工作               |
+
+> 报告落盘同时生成 `.md` / `.json` / `.html` 三份；`.html` 是**派生的本地预览**
+> （自包含、无脚本），不属于冻结契约 ⑧ —— 契约只约束 JSON 结构。
 
 ---
 
@@ -93,13 +101,14 @@ canonicalize 规则：
 
 ### 关键语义
 
-| 语义         | 规则                                                                                      | 依据                                       |
-| ------------ | ----------------------------------------------------------------------------------------- | ------------------------------------------ |
-| **动作幂等** | 同键重复调用 → `replayed: true`，**不产生第二次副作用**                                   | aiwarden ADR-013 决策 6                    |
-| **崩溃续跑** | 崩在"动作已生效、检查点未落" → 续跑重做该步，幂等键命中 `SUCCEEDED` 终态 → 无第二次副作用 | 同上（双防线）                             |
-| **租约独占** | 同 session 并发 → 409，不并行产生副作用                                                   | aiwarden ADR-013 决策 4                    |
-| **成本归因** | 四维：租户 / 会话 / 步骤 / 工具                                                           | aiwarden ADR-014                           |
-| **替身等价** | 内存替身与真实 HTTP 实现必须跑**同一套**治理契约测试                                      | 见 [`tests/contract/`](../tests/contract/) |
+| 语义         | 规则                                                                                                                                                                                        | 依据                                       |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| **动作幂等** | 同键重复调用 → `replayed: true`，**不产生第二次副作用**                                                                                                                                     | aiwarden ADR-013 决策 6                    |
+| **崩溃续跑** | 执行前写 pending（action + beforeHash + `projectAfter` 的 expectedAfterHash）；恢复时三分支：after → `replayed`、before → 用同一动作重做、其他 → **显式失败**；对局恢复不了也不自动新开一局 | 裁决 26                                    |
+| **成本来源** | 模型 usage / 治理 usage / 合成值 / unavailable **分开记**；拿不到不填 0                                                                                                                     | 裁决 25                                    |
+| **租约独占** | 同 session 并发 → 409，不并行产生副作用                                                                                                                                                     | aiwarden ADR-013 决策 4                    |
+| **成本归因** | 四维：租户 / 会话 / 步骤 / 工具                                                                                                                                                             | aiwarden ADR-014                           |
+| **替身等价** | 内存替身与真实 HTTP 实现必须跑**同一套**治理契约测试                                                                                                                                        | 见 [`tests/contract/`](../tests/contract/) |
 
 ---
 
@@ -134,7 +143,9 @@ isTerminal(state) = state.status === "finished"
 
 | 边界                      | 现状                                                                                                                               |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| 真实模型接入              | **已实现**（`src/llm/openai-client.ts`，OpenAI 兼容）；无端点时**显式降级**并标注原因                                              |
+| 真实模型接入              | **已实现**（`src/llm/openai-client.ts`，OpenAI 兼容）；2026-11-05 已实跑 5 步（LongCat-2.5，0 降级）；60 步整局未跑                |
+| 成本归因                  | **已实现两条来源**：LLM `usage` 与 aiwarden `t_llm_call_log`；后者是工具调用配额当量，不是模型 token，报告分开标注                 |
+| 崩溃续跑                  | **已实现**检查点 + pending 意图 + CLI `--resume`；假服务进程级验证 + 2026-11-05 真实 aiwarden 续跑 30 步（`replayed 1`）           |
 | MCP 通道                  | **未做**。治理接入走 HTTP；aiwarden 已是 MCP 服务端，客户端接入为后续增强                                                          |
 | aiwarden 真实 HTTP 客户端 | **已实现**（`src/governance/aiwarden-client.ts`）；aiwarden 不可达时**显式降级**到内存替身                                         |
 | aiwarden 侧游戏动作工具   | **没有**（实测注册的是 `assign_ticket` / `create_ticket`）；本项目**用 `create_ticket` 作替身**验证整条治理管道，**不改 aiwarden** |
@@ -147,7 +158,14 @@ isTerminal(state) = state.status === "finished"
 
 ### 6.1 结论
 
-**真实 aiwarden 链路已实跑通过**：治理契约 **7 条实跑通过 + 1 条标为不适用**，0 失败。
+> **2026-11-05 口径更新**：治理契约扩为 9 条后，真实实现变为
+> **6 条实跑 + 3 条显式不适用**（traceId、单次调用 tokens、按 session 查询用量）。
+> 成本链路改由 [`tests/integration/aiwarden-usage.test.ts`](../tests/integration/aiwarden-usage.test.ts)
+> 专门覆盖（真实服务 + Kafka 落库轮询）。**该测试已实现，但 2026-11-05 本机未起 aiwarden，
+> 已于 2026-11-05 实跑：真实 aiwarden 契约 + usage 共 **7 通过 + 3 显式不适用**。
+> 下面的 8 条版本运行记录保留为 2026-11-04 的时点证据。
+
+**2026-11-04 首次实跑**：治理契约 **7 条实跑通过 + 1 条标为不适用**，0 失败。
 
 ```console
 $ npm run test:integration
@@ -196,7 +214,7 @@ $ AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm run test:integration
 | #   | 缺陷                            | 根因                                                                                                                                                                                  | 修法                                                                                               |
 | --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | D1  | 租户标识被拒（HTTP 400）        | aiwarden 的 `tenant_id` 是 `long`，`requireTenantIdAsLong()` 对非数值直接拒绝；客户端原本默认 `"playtest"`                                                                            | 改为**数值字符串**，默认 `"1"`（种子数据 `id=1, name=demo-tenant`）；`setup.ts` 与集成测试同步修正 |
-| D2  | **不同 session 的动作互相吞掉** | 客户端把 `digest`（只吃 `{stepNo, payload}`）当 `orderRef`；而 `create_ticket` 用 `orderRef` 做唯一约束 → 不同 session 的同一动作撞键 → `ON CONFLICT DO NOTHING` → **副作用静默丢失** | `orderRef` 改为**完整幂等键**（businessKey:session:stepNo:digest），含全部维度                     |
+| D2  | **不同 session 的动作互相吞掉** | 客户端把 `digest`（只吃 `{stepNo, payload}`）当 `orderRef`；而 `create_ticket` 用 `orderRef` 做唯一约束 → 不同 session 的同一动作撞键 → `ON CONFLICT DO NOTHING` → **副作用静默丢失** | `orderRef` 改为**完整幂等键**（businessKey::session::stepNo::digest），含全部维度                  |
 | D3  | 键序不同的同一动作被当成两个    | `title` 用 `JSON.stringify(action)` 原样保留键序；aiwarden 侧只对**顶层** Map 排序（`ORDER_MAP_ENTRIES_BY_KEYS`），嵌套结构不保证                                                     | 客户端先 `canonicalize` 再写入 `title`（规范化必须在本侧做，不能指望服务端）                       |
 
 > **D2 是本项目最重要的一条**：它同时暴露了两件事 ——
@@ -210,4 +228,6 @@ $ AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm run test:integration
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | aiwarden 侧**没有游戏动作工具** | 实测注册的是 `assign_ticket` / `create_ticket`（`GET /api/v1/agent/tools`）。aiwarden PRD §10 明说「工单是零资金风险的演示替身」 | 本项目用 `create_ticket` 作**替身**验证整条管道（幂等 / 配额 / 审计 / 补偿全部生效）。**不改 aiwarden**；若将来要真游戏动作工具，需 aiwarden 侧注册 |
 | 单次调用无 traceId              | `ToolInvokeResponse` 无该字段；traceId 在 session 层（`t_agent_session.trace_id`）                                               | 治理契约中该条标 `inMemoryOnly: true`，对真实实现**显式跳过并注明原因**（不是删断言）                                                               |
-| 真实链路的**续跑**未实跑        | `POST /api/v1/agent/runs/{sessionKey}/resume` 需要先有 session 记录；本项目的续跑语义目前由内存替身 + 崩溃注入测试覆盖           | 后续项：把游戏 session 与 aiwarden session 对齐后再验证                                                                                             |
+| 真实链路的**续跑**              | 2026-11-05 已实跑 30 步、`replayed 1`；必须同 tenant / session / businessKey                                                     | 检查点保留 token；恢复不了显式失败，不自动新开一局                                                                                                  |
+| 成本口径                        | LLM usage 是模型 token；aiwarden `t_llm_call_log` 里工具调用的 `prompt_tokens` 是**配额当量**（默认 100/次），不是模型 token     | 报告分 `llmTokens` / `governanceTokens` / `tokenSources`，不合成一个冒充真实成本的 total；拿不到标 `unavailable`                                    |
+| 真实模型                        | OpenAI 兼容客户端已实现；2026-11-05 已实跑 5 步（0 降级）；60 步整局未跑                                                         | 无 key 时显式降级；`reasoning_content` 已兼容；仓库不保存密钥                                                                                       |

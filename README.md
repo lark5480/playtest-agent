@@ -24,14 +24,15 @@
 
 ## 它做什么
 
-| 能力           | 说明                                                              |
-| -------------- | ----------------------------------------------------------------- |
-| **自主开局**   | 自动注册房间、加入对局、开始游戏 —— 不需要人工摆姿势              |
-| **确定性游玩** | 同 seed + 同局面 → 同动作。缺陷能稳定复现，报告才有证据价值       |
-| **机制断言**   | 每步执行后校验不变量（回合交替、终局不可动、失败无副作用…）       |
-| **治理证据**   | 每步带幂等指纹、成本归因、traceId —— 可与治理侧 trace 串联        |
-| **崩溃续跑**   | 崩在"动作已生效、检查点未落" → 续跑**不产生第二次副作用**         |
-| **降级不崩**   | 模型不可用 → 降级到确定性基线，**仍跑完整局**，报告显式标注降级段 |
+| 能力           | 说明                                                                             |
+| -------------- | -------------------------------------------------------------------------------- |
+| **自主开局**   | 自动注册房间、加入对局、开始游戏 —— 不需要人工摆姿势                             |
+| **确定性游玩** | 同 seed + 同局面 → 同动作。缺陷能稳定复现，报告才有证据价值                      |
+| **机制断言**   | 每步执行后校验不变量（回合、终局、失败无副作用、合法集、历史连续性…）            |
+| **治理证据**   | 每步带幂等指纹；traceId / 成本按来源标注（治理侧提供时），拿不到标 unavailable   |
+| **成本口径**   | 模型 usage / 治理 usage / 合成值分开记，不拿一个 total 冒充真实成本              |
+| **崩溃续跑**   | 检查点 + pending 意图 + 状态哈希；CLI `--resume`，同 businessKey，不自动新开一局 |
+| **降级不崩**   | 模型不可用 → 降级到确定性基线，**仍跑完整局**，报告显式标注降级段                |
 
 ---
 
@@ -51,12 +52,41 @@ cd ../chess-arena && npm install && npm run dev
 # 另开一个终端：
 cd playtest-agent
 npm run playtest -- --scenario chess
+
+# 崩溃续跑：先跑到第 10 步后崩溃，再从检查点接着跑
+npm run playtest -- --scenario crash --inject-crash=10 \
+  --checkpoint=reports/checkpoints/crash.json
+npm run playtest -- --resume=reports/checkpoints/crash.json
+
+# 多 seed 扫描（Oracle 覆盖）
+npm run scan -- --scenario smoke --seeds=1-50 --max-steps=60
 ```
 
 > PowerShell 会把裸 `--` 当自己的参数分隔符吃掉；在 PowerShell 里请写成
 > `npm run playtest '--' --scenario chess`。cmd / bash 不受影响。
 
-跑完后看 `reports/` 下的 Markdown 与 JSON 报告（运行产物，不入库）。
+### 接真实模型
+
+把 `.env.example` 复制为 `.env` 并填三项；npm 脚本会通过
+`--env-file-if-exists=.env` 自动加载（`.env` 在 `.gitignore` 内）：
+
+```bash
+cp .env.example .env
+# 编辑 .env：AI_API_BASE / AI_API_KEY / AI_MODEL
+npm run playtest -- --scenario smoke --max-steps=5
+```
+
+也可以直接在命令行注入（shell 变量优先于 `.env`）。
+
+- **reasoning 模型**（如 LongCat-2.5）会把最终答案放在 `reasoning_content`；
+  客户端已兼容，并默认 `AI_MAX_TOKENS=1024`、`AI_TIMEOUT_MS=60000`。
+- 模型只从合法动作集里选；报告写 `model` 与 `llmTokens`。**未配置时不会静默**：
+  每一步都标 `degraded` 并写明原因。
+- 密钥只进本地 `.env`（gitignored），不进仓库、日志与报告。
+
+跑完后看 `reports/` 下的 Markdown / JSON / HTML 报告（运行产物，不入库）。
+HTML 是自包含页面（无脚本、无 ServiceWorker），可以直接用 Chrome/Edge 打开；
+如果 Qoder 的 Web 预览报 `Could not register service worker`，用 HTML 即可。
 报告格式样例见 [`docs/sample-report.md`](docs/sample-report.md)。
 
 ---
@@ -68,8 +98,12 @@ npm run typecheck        # tsc --noEmit
 npm test                 # 单元测试（纯函数内核）
 npm run test:contract    # 契约测试（适配器 / 治理实现必过）
 npm run test:integration # 集成测试
+npm run test:integration:resume  # 进程级崩溃续跑（自带假服务）
+npm run test:integration:llm     # 真实模型（需配置 AI_API_*，否则显式跳过）
 npm run playtest -- --scenario smoke   # 跑 othello 一整局
 npm run playtest -- --scenario chess   # 跑 chess-arena（默认 localhost:3000）
+npm run scan -- --scenario smoke --seeds=1-50   # 多 seed 扫描
+npm run report:html -- --file=reports/xxx.json  # 把已有报告转成可浏览器打开的 HTML
 npm run lint && npm run format:check
 npm run build
 ```
@@ -80,6 +114,8 @@ npm run build
 
 > 以下是本机实跑输出（2026-11-03，Node v24.22.1）。
 > 被测游戏：`othello-online` 本地 `preview`（内存版 `/api`，**无需 EdgeOne 账号或 KV**）。
+> **历史口径提示**：2026-11-05 起 Heuristic PRNG 改为无状态（`seed + observation.seq`），
+> 动作序列会与本节旧输出不同；当前口径见下一节「2026-11-05 收口实跑」。
 
 ### 验收 1 · Agent 无人值守自动完成一局
 
@@ -100,7 +136,8 @@ $ npm run playtest -- --scenario crash --inject-crash=10
 [playtest] 注入崩溃：第 10 步执行完成后（续跑应从这里接着跑）
 ```
 
-续跑语义由集成测试验证（见下）。
+> 2026-11-05 起，实际续跑需要同时传 `--checkpoint=<路径>`；未传时会提示无法续跑。
+> 当前用法见下一节「2026-11-05 收口实跑」。
 
 ### 验收 3 · 模型不可用 → 降级但不中断
 
@@ -112,13 +149,120 @@ $ npm run playtest -- --scenario smoke --seed=99
 **60 步全部标注降级、原因写明在报告的「降级说明」节、局照样跑完、状态 passed。**
 这就是承诺 C4 的证据：AI 是地基，但地基塌了游戏不崩，且**如实标注**。
 
+### 2026-11-05 收口实跑：治理证据 + 真续跑 + 扫描
+
+> 这一轮把「报告自证治理证据」和「CLI 真续跑」补齐。运行环境同上。
+
+**自动完成一局（报告新增治理证据）**
+
+```console
+$ npm run playtest -- --scenario smoke --seed=42
+[playtest] 场景=smoke seed=42 被测=http://localhost:5173 模型=未配置（走确定性基线） 治理=in-memory（降级） 注入=无 续跑=否
+[playtest] 治理降级：aiwarden 不可达（fetch failed），已降级到内存治理替身
+[playtest] 完成：passed · 60 步 · 降级 60 · 重放 0 · 发现 0
+[playtest] 成本：llm 0 · 治理 600 · 来源 synthetic · 无数据 0 步
+[playtest] 报告：.../reports/smoke-2026-11-05T07-38-03-136Z.md
+```
+
+报告新增「治理证据」节：LLM tokens / 治理 tokens / 来源 / 无成本数据步数 /
+traceId 覆盖步数；步骤表新增 tokens 与 trace 列。**synthetic 明确标注为合成值**，
+不会被当成真实成本。
+
+**崩溃 → 检查点 → 续跑**
+
+```console
+$ npm run playtest -- --scenario crash --seed=7 --inject-crash=10 \
+    --checkpoint=reports/checkpoints/crash-demo.json
+[playtest] 注入崩溃：第 10 步执行完成后（续跑应从这里接着跑）
+[playtest] 检查点：.../reports/checkpoints/crash-demo.json
+
+$ npm run playtest -- --resume=reports/checkpoints/crash-demo.json
+[playtest] 完成：passed · 60 步 · 降级 60 · 重放 1 · 发现 0
+[playtest] 成本：llm 0 · 治理 590 · 来源 synthetic/unavailable · 无数据 1 步
+```
+
+第 10 步判定为 `replayed`（不重复落子），后续动作与未崩溃基线一致；
+`reports/checkpoints/` 在 gitignore 内，检查点含凭证但不进日志/报告。
+进程级测试 `npm run test:integration:resume` 自带假服务，CI `verify` 也跑。
+
+**真实模型 + 真实 aiwarden（5 步）**
+
+```console
+$ npm run playtest -- --scenario smoke --max-steps=5
+[playtest] 模型=openai-compatible:LongCat-2.5 治理=aiwarden-http ...
+[playtest] 完成：passed · 5 步 · 降级 0 · 重放 0 · 发现 0
+[playtest] 成本：llm 4940 · 治理 500 · 来源 model-usage/governance-usage · 无数据 0 步
+```
+
+> 5 步全部非降级；`llmTokens` 来自模型 usage。
+> 预算已配置：5 步 × 100 = **500** 治理 tokens。
+> 未配置当月预算时 aiwarden 会按设计记 0；`model-usage / governance-usage` 两个来源都已入报告。
+
+**真实 aiwarden 续跑（30 步）**
+
+```console
+$ ... playtest --scenario crash --seed=7 --inject-crash=10 --max-steps=30 --checkpoint=...
+[playtest] 治理=aiwarden-http
+[playtest] 注入崩溃：第 10 步执行完成后（续跑应从这里接着跑）
+exit=3
+
+$ ... playtest --resume=... --max-steps=30
+[playtest] 完成：passed · 30 步 · 降级 30 · 重放 1 · 发现 0
+[playtest] 成本：llm 0 · 治理 3000 · 来源 governance-usage · 无数据 0 步
+exit=0
+```
+
+> 这条用确定性基线跑，专门验证治理续跑（所以「降级 30」是没配模型，不是失败）。
+> 第 10 步命中 pending 状态哈希 → `replayed 1`，不重复落子。
+
+**多 seed 扫描（Oracle 加强后）**
+
+```console
+$ npm run scan -- --scenario smoke --seeds=1-50 --max-steps=60
+[scan] 完成：50 局 · 2999 步 · 发现 0（待人工复核）
+```
+
+新增 OTH2 整盘投影、OTH8 合法集、OTH9 winner、OTH10 累计棋子数；
+chess 侧 CHS12–CHS15（合法集、FEN 历史连续性、子力不足、result 口径）由单测覆盖，
+并实跑 `3 seeds / 120 步`（CHS1–CHS15 零违规）。
+
+**本地验证**
+
+- 单元 **131** / 契约 **23** / 集成 **21**（othello 起来时 4 条通过；
+  其余依赖未起按规则显式跳过）
+- `lint` / `format:check` / `typecheck` / `build` 全绿
+- 本轮改动尚未推送；推送后需重跑 CI
+  （上一轮 green run `41801302392` 是 2026-11-04 的代码）
+
+**本轮真实链路补跑（2026-11-05）**
+
+- **真实模型 + 真实 aiwarden**：5 步、**0 降级**、`llmTokens=4795`；
+  报告同时含 `model-usage` 与 `governance-usage` 两个来源。
+- **真实 aiwarden 契约 + usage**：**7 通过 + 3 显式不适用**；
+  usage 专用测试会在「期望步集合」未到齐时继续轮询，不提前返回。
+- **真实 aiwarden 续跑**：30 步、`replayed 1`、退出 0；对局 `businessKey` 不变。
+- **治理 tokens 口径**：预算已配置，5 步=**500**、30 步续跑=**3000**（100/次）；
+  未配置当月预算时 aiwarden 按设计记 0。
+- **仍受边界**：真实模型只跑了 5 步，不是 60 步整局；模型即使 `temperature=0`
+  也不保证逐字一致，报告只保证「合法动作 + 可复现的治理证据」。
+
+当月预算已配置（2026-11，limit 10,000,000）。新库/重置后需要重新执行：
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/admin/budgets/1 \
+  -H "X-Aiwarden-Tenant-Id: 1" \
+  -H "X-Aiwarden-User-Id: 1" \
+  -H "Content-Type: application/json" \
+  -d '{"tokenLimit":10000000}'
+```
+
 ### 测试结果
 
-| 层   | 用例数 | 通过   | 说明                                                                                                                            |
-| ---- | ------ | ------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| 单元 | 96     | 96     | 纯函数内核（指纹 / PRNG / 驱动骨架 / 报告 / 策略 / Oracle / 国际象棋规则与历史型终局 / 429 重试 / othello 版本戳缓存）          |
-| 契约 | 22     | 22     | 治理幂等 8 条 + **chess-arena 适配器 7 条** + **othello 适配器 7 条**（本地 HTTP 假服务，不依赖真实进程）                       |
-| 集成 | 17     | 视模式 | 游戏链路 4 条、tongshi duel 5 条（CI 强制跑）+ aiwarden 8 条（7 条实跑 + traceId 1 条不适用）；依赖不可达时按下面规则跳过或失败 |
+| 层   | 用例数 | 通过   | 说明                                                                                                                           |
+| ---- | ------ | ------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| 单元 | 131    | 131    | 纯函数内核、策略、Oracle（含 OTH2/OTH8–10、CHS12–15）、状态哈希、续跑判定、检查点、成本合并、CLI 参数                          |
+| 契约 | 23     | 23     | 治理 9 条（真实 6 实跑 + 3 显式不适用）+ **chess-arena 适配器 7 条** + **othello 适配器 7 条**（本地 HTTP 假服务）             |
+| 集成 | 21     | 视模式 | 游戏链路 4、tongshi duel 5、aiwarden 10（契约 + usage）、真实模型 1、崩溃续跑 2（库内 + 进程级）；依赖不可达时按规则跳过或失败 |
 
 ### 集成测试：跳过 vs 失败
 
@@ -144,8 +288,8 @@ $ npm run playtest -- --scenario smoke --seed=99
 # 服务都不起 + 本地模式：跳过并打印，退出码 0
 PLAYTEST_REQUIRE_INTEGRATION=0 npm run test:integration
 
-# 服务都不起 + 强制模式：16 条失败（7 aiwarden + 4 游戏 + 5 tongshi），
-# traceId 1 条不适用跳过，退出码 1
+# 服务都不起 + 强制模式：除自足的进程级续跑外，依赖项全部失败；
+# 2 条真实实现不适用的契约显式跳过，退出码 1
 PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration
 
 # 起两个游戏后 + 强制模式：游戏链路 4/4 通过
@@ -153,24 +297,24 @@ cd ../othello-online && npm run build && npm run preview -- --port 5173
 cd ../chess-arena && npm run build && npm start
 PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:games
 
-# 起 aiwarden 后 + 强制模式：治理契约 7 条实跑
-PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:aiwarden
+# 起 aiwarden 后 + 强制模式：治理契约 6 条实跑 + usage 1 条（3 条显式不适用）
+PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_ADMIN_USER_ID=1 npm run test:integration:aiwarden
 ```
 
 CI 侧相关 job：
 
 | job                    | 内容                                                                                                                        | 超时    |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------- |
-| `verify`               | lint / format / typecheck / 单测 / 契约 / 构建                                                                              | 未设    |
+| `verify`               | lint / format / typecheck / 单测 / 契约 / **进程级续跑** / 构建                                                             | 未设    |
 | `e2e`                  | 拉 othello-online → 起服 → `npm run playtest -- --scenario smoke` → 上传 `playtest-report`                                  | 未设    |
 | `integration-games`    | 拉 othello-online / chess-arena → 构建 → 5173 / 3000 起服 → `PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:games` | 10 分钟 |
 | `integration-tongshi`  | 拉 tongshi-ju → 构建 → 3100 起服 → `PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:tongshi`                        | 15 分钟 |
-| `e2e-tongshi`          | 拉 tongshi-ju → 由其 Playwright `webServer` 起服 → 跑自带 Playwright 套件（actor 侧不引 Playwright 依赖）                   | 15 分钟 |
-| `integration-aiwarden` | 仅当仓库变量 `AIWARDEN_BASE_URL` 配置时运行，运行即强制；不配置则不运行                                                     | 5 分钟  |
+| `e2e-tongshi`          | 拉 tongshi-ju → 先起 3100 `next start` → 显式 `CI:""` 让 Playwright 复用 → 跑自带套件（actor 侧不引 Playwright 依赖）       | 15 分钟 |
+| `integration-aiwarden` | 仅当仓库变量 `AIWARDEN_BASE_URL` 配置时运行，运行即强制（契约 + usage）；不配置则不运行                                     | 5 分钟  |
 
-aiwarden 的 7 条需要 Java 21 + Maven + Docker（测试只需 PG / Redis / Kafka；MinIO 是 aiwarden 完整 compose 的一部分，治理契约用不到），但单轮约 2 分钟、叠加镜像拉取抖动，挂到每次 push 的默认流水线既不划算也不稳定，**不在默认 CI 里假装通过**：job 不配置 URL 就不运行（Actions 里显示 Skipped），配置了就必须真跑、失败即红。
+aiwarden 的治理链路需要 Java 21 + Maven + Docker（测试只需 PG / Redis / Kafka；MinIO 是 aiwarden 完整 compose 的一部分，治理契约用不到），但单轮约 2 分钟、叠加镜像拉取抖动，挂到每次 push 的默认流水线既不划算也不稳定，**不在默认 CI 里假装通过**：job 不配置 URL 就不运行（Actions 里显示 Skipped），配置了就必须真跑、失败即红。运行时会设 `AIWARDEN_ADMIN_USER_ID=1`，因为 `/api/v1/admin/usage` 要求数值主体。
 
-另有一个独立 workflow（`.github/workflows/aiwarden-nightly.yml`）：夜间 cron + 手动 `workflow_dispatch` 触发，不挂在 push / PR 主流程上。它起的是真实 aiwarden 服务（真实 PG / Redis / Kafka，覆盖幂等 / 限流 / 审计链路；模型侧是确定性替身，零 API Key、零云端审批），但覆盖范围有限：只验证治理契约（当前 7 通过 / 1 条既有能力跳过），不验证真实模型行为，也不覆盖依赖对象存储的路径（MinIO 未启动）。
+另有一个独立 workflow（`.github/workflows/aiwarden-nightly.yml`）：夜间 cron + 手动 `workflow_dispatch` 触发，不挂在 push / PR 主流程上。它起的是真实 aiwarden 服务（真实 PG / Redis / Kafka，覆盖幂等 / 限流 / 审计链路；模型侧是确定性替身，零 API Key、零云端审批），但覆盖范围有限：只验证治理契约（6 实跑 + 3 显式不适用）与 usage 查询，不验证真实模型行为，也不覆盖依赖对象存储的路径（MinIO 未启动）。
 
 ### 第二游戏适配：chess-arena（2026-11-04 实跑）
 
@@ -202,6 +346,11 @@ fifty 必须半回合到 100、漏判要报、将死优先于判和）。国际�
 
 ### 真实 aiwarden 治理链路：已实跑（2026-11-04）
 
+> 2026-11-05 契约扩为 9 条后，真实实现口径变为 **6 实跑 + 3 显式不适用**
+> （traceId、单次 tokens、按 session 查询用量）；成本链路改由
+> `tests/integration/aiwarden-usage.test.ts` 专门覆盖。下面是 2026-11-04 的
+> 8 条版本记录，保留为时点证据。
+
 本机 Docker 恢复可用后，真实链路首次跑通：
 
 ```console
@@ -224,12 +373,12 @@ $ npm run test:integration
 ```console
 $ PLAYTEST_REQUIRE_INTEGRATION=0 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm run test:integration
 SKIPPED: aiwarden 未启动（设置 PLAYTEST_REQUIRE_INTEGRATION=1 强制失败）
-ℹ tests 12  ℹ pass 0  ℹ fail 0  ℹ skipped 12
 
 $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm run test:integration:aiwarden
 [集成] 强制模式：aiwarden 未启动：aiwarden 不可达：fetch failed
-ℹ tests 8  ℹ pass 0  ℹ fail 7  ℹ skipped 1
 ```
+
+进程级续跑测试自带假服务，因此即使依赖全没起也会通过；其余用例按 gate 规则跳过或失败。
 
 **实跑暴露了三个只有真实实现才会暴露的缺陷**（内存替身全都测不出来）——
 租户标识必须是数值字符串、下游唯一约束字段必须承载全部幂等维度、
@@ -239,23 +388,29 @@ $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm ru
 
 ### 仍然存在的边界（如实记录）
 
-| 边界                                | 原因                                                   | 处置                                                     |
-| ----------------------------------- | ------------------------------------------------------ | -------------------------------------------------------- |
-| aiwarden 侧**没有游戏动作工具**     | 实测注册的是 `assign_ticket` / `create_ticket`         | 用 `create_ticket` 作替身验证整条管道；**不改 aiwarden** |
-| 单次工具调用**不返回 traceId**      | `ToolInvokeResponse` 无该字段（traceId 属 session 层） | 契约该条标「不适用」并注明原因，而非删断言               |
-| chess-arena 走子**限流 60 次/分钟** | 游戏侧按 IP 的固定窗口限流                             | chess 场景上限设为 60 步；不绕过限流、不改被测仓库       |
+| 边界                                | 原因                                                         | 处置                                                                              |
+| ----------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| aiwarden 侧**没有游戏动作工具**     | 实测注册的是 `assign_ticket` / `create_ticket`               | 用 `create_ticket` 作替身验证整条管道；**不改 aiwarden**                          |
+| 单次工具调用**不返回 traceId**      | `ToolInvokeResponse` 无该字段（traceId 属 session 层）       | 契约该条标「不适用」并注明原因，而非删断言                                        |
+| 真实 aiwarden **usage** 是异步落库  | Outbox → Kafka → `t_llm_call_log`；**未配预算时按设计记 0**  | 按 session + run `startedAt` 过滤，轮询到「期望步集合」；仍无记录标 `unavailable` |
+| 真实 aiwarden **续跑**              | 2026-11-05 已实跑 30 步，`replayed 1`、退出 0                | 必须同 tenant / session / businessKey；检查点保留 token                           |
+| 真实模型                            | 2026-11-05 已实跑 5 步（LongCat-2.5，0 降级）；60 步整局未跑 | 无 key 时显式降级；`reasoning_content` 已兼容                                     |
+| chess-arena 走子**限流 60 次/分钟** | 游戏侧按 IP 的固定窗口限流                                   | chess 场景上限设为 60 步；不绕过限流、不改被测仓库                                |
 
 ### 关于"发现真实缺陷"的诚实结论
 
-计划要求 MVP 至少发现一个真实缺陷。**实际扫描结果是：没有发现 othello 的机制缺陷。**
+按 [`docs/decisions/`](docs/decisions/) 裁决 18，MVP **不强制**要求发现真实缺陷，
+但必须如实记录扫描结论。**目前仍没有发现 othello 的机制缺陷。**
 
-- 扫描 41 个 seed、约 2400 步，游戏特异断言（OTH1–OTH7）**零违规**；
-- 并发场景（两个客户端同房间同时落子）**保护有效**：乐观并发精确返回 409 冲突。
-
-过程中确实出现过一次"发现"，但经查证是**本项目的断言误报**（通用 Oracle 无法区分
-othello 的"对方无子可下 → 保持当前回合"合法跳过与"该换没换"）。已修正断言分层：
-通用层只判通用可判的，跳过规则交给游戏特异 Oracle（OTH6）。
-这条误报本身也写进了 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) —— **它比一个假缺陷更有价值**。
+- 2026-11-05 扫描 50 个 seed、2999 步，通用 G1–G5 + OTH1–OTH10 **零违规**
+  （新增 OTH2 整盘投影、OTH8 合法集、OTH9 winner、OTH10 累计棋子数）；
+- 并发场景（两个客户端同房间同时落子）**保护有效**：乐观并发精确返回 409 冲突；
+- chess 侧 CHS12–CHS15 已由单测覆盖，并实跑 3 seeds / 120 步（CHS1–CHS15 零违规）；
+  chess 扫描受 60 次/分限流，默认只扫 3 个 seed、40 步；
+- 过程中出现过一次"发现"，经查证是**本项目的断言误报**（通用 Oracle 无法区分
+  othello 的合法跳过与"该换没换"）。已修正断言分层：通用层只判通用可判的，
+  跳过规则交给 OTH6。这条误报写进了 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) ——
+  **它比一个假缺陷更有价值**。
 
 而**真实治理链路**这一侧确实发现了三个真缺陷（见上）—— 只是它们属于
 **本项目的客户端**，而不是被测游戏。
@@ -264,19 +419,25 @@ othello 的"对方无子可下 → 保持当前回合"合法跳过与"该换没�
 
 ## 项目状态
 
-**当前阶段：Stage 0–6 · 地基 → 驱动层 → 治理层 → MVP 验收**（路线见 [`docs/PRD.md`](docs/PRD.md) §14）。
+**当前阶段：Stage 0–6 + P0–P2 收口**（路线见 [`docs/PRD.md`](docs/PRD.md) §14）。
 
 已交付：
 
 - 8 项**冻结契约**（类型 / 指纹算法 / 四个 SPI / 治理键构成 / 报告结构）
-- 纯函数内核：幂等指纹、种子化 PRNG、驱动骨架、报告渲染
+- 纯函数内核：幂等指纹、无状态种子化 PRNG、驱动骨架、报告渲染、状态哈希、续跑判定、成本合并
 - 适配器与治理的**契约测试套件**（任何实现接入必过）
 - 驱动层：GameDriver + othello / chess-arena 双适配器 + LLM 策略（带显式降级）+ 通用 / 游戏特异 Oracle
-- 治理层：真实 aiwarden HTTP 客户端（不可达时**显式降级**到内存替身）
-- MVP 验收：自动打完一局、崩溃续跑不重复副作用、并发冲突 409 拦截、降级不中断
-- CI：verify / e2e / integration-games / integration-tongshi / e2e-tongshi 全绿（run 41801302392）
+- 治理层：真实 aiwarden HTTP 客户端 + 按 session 查询 usage（不可达/查不到时**显式降级或标 unavailable**）
+- 续跑：检查点 + pending 意图 + `projectAfter` 状态哈希 + CLI `--resume`；进程级测试覆盖
+- 报告：每步 traceId / LLM tokens / 治理 tokens / 来源；成本不合成真假不分的 total
+- 扫描：`npm run scan` 多 seed 汇总，发现项标注「待人工复核」
+- 真实链路补跑（2026-11-05）：真实模型 5 步 0 降级、aiwarden 契约+usage 7 通过 + 3 不适用、aiwarden 续跑 30 步 `replayed 1`
+- 测试：单元 131 / 契约 23 / 集成 21；`lint` / `format:check` / `typecheck` / `build` 全绿
+- CI：上一轮 `41801302392` 全绿（2026-11-04 代码）；**本轮改动尚未推送**，
+  推送后需重跑 `verify` / `e2e` / 三个 integration job 确认
 
-待做（路线图后续项，不属于 MVP）：场景级预算熔断、MCP 通道、报告跨场景基线 diff、真实链路续跑。
+待做（路线图后续项）：场景级预算熔断、MCP 通道、报告跨场景基线 diff、
+**真实模型 60 步整局实跑**（当前只跑了 5 步）。
 
 ---
 
