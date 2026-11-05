@@ -105,7 +105,8 @@ AI_API_KEY= npm run playtest -- --scenario smoke
 - 上述命令**全部可复现**，真实输出贴进 README；
 - 至少**发现并修复一个真实缺陷**（不是植入的假缺陷）——
   若一个都没有，说明断言不够强，需加强 Oracle 再验；
-- CI 两段全绿。
+- CI 全绿：`verify` 与真实链路各 job 全部通过；aiwarden 集成在未配置外部地址时按设计 Skipped
+  （job 清单见 README 的「CI 侧相关 job」表，不在此重复维护）。
 
 ### e2e-tongshi 的启动约定
 
