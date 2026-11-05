@@ -107,6 +107,14 @@ AI_API_KEY= npm run playtest -- --scenario smoke
   若一个都没有，说明断言不够强，需加强 Oracle 再验；
 - CI 两段全绿。
 
+### e2e-tongshi 的启动约定
+
+`e2e-tongshi` job **不得预启动 3100 服务**：测试服务由 tongshi-ju 的 Playwright `webServer` 自己起，
+并跑干净构建（不设 `CI: ""` 之类的绕过）。我们的 job 必须与 tongshi-ju 自身 CI 同形：
+`NEXT_DIST_DIR: .next-e2e` → `npm run build` → `npx playwright test`。
+上游若变更 `E2E_PORT` / `NEXT_DIST_DIR` 等约定，我们跟随对齐，**不在 agent 侧放宽断言或跳过 job**
+（背景：上游 `01b8c96` 在配置加载阶段检查端口，占用即 `exit(1)`）。
+
 ---
 
 ## 5. 断言的独立性
