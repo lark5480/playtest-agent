@@ -170,6 +170,8 @@ CI 侧相关 job：
 
 aiwarden 的 7 条需要 Java 21 + Maven + Docker（PG / Redis / Kafka / MinIO），托管 runner 冷启动装不下，**不在默认 CI 里假装通过**：job 不配置 URL 就不运行（Actions 里显示 Skipped），配置了就必须真跑、失败即红。
 
+另有一个独立 workflow（`.github/workflows/aiwarden-nightly.yml`）：夜间 cron + 手动 `workflow_dispatch` 触发，不挂在 push / PR 主流程上。它起的是真实 aiwarden 服务（真实 PG / Redis / Kafka，覆盖幂等 / 限流 / 审计链路；模型侧是确定性替身，零 API Key、零云端审批），但覆盖范围有限：只验证治理契约（当前 7 通过 / 1 条既有能力跳过），不验证真实模型行为，也不覆盖依赖对象存储的路径（MinIO 未启动）。
+
 ### 第二游戏适配：chess-arena（2026-11-04 实跑）
 
 ```console
