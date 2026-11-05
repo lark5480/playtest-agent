@@ -17,7 +17,12 @@
  */
 
 import { canonicalize, computeFingerprint, fingerprintKey } from "../core/fingerprint.js";
-import type { GovernanceClient, GovernanceResult } from "../types/governance.js";
+import type {
+  GovernanceClient,
+  GovernanceResult,
+  GovernanceUsage,
+  GovernanceUsageEntry,
+} from "../types/governance.js";
 
 export interface AiwardenHttpOptions {
   /** aiwarden 基地址（默认本地 8080）。 */
@@ -43,8 +48,19 @@ export interface AiwardenHttpOptions {
   readonly tenantId?: string;
   /** 主体标识（身份头）。 */
   readonly userId?: string;
+  /**
+   * 用量查询接口的主体标识。
+   *
+   * `/api/v1/admin/usage` 走 `PrincipalContext.requireUserIdAsLong()`，
+   * **必须**是数值字符串；与工具调用入口的字符串主体分开配置。
+   */
+  readonly adminUserId?: string;
   /** 单次请求超时（毫秒）。 */
   readonly timeoutMs?: number;
+  /** 用量异步落库的轮询次数。 */
+  readonly usagePollAttempts?: number;
+  /** 用量轮询间隔（毫秒）。 */
+  readonly usagePollIntervalMs?: number;
 }
 
 export class AiwardenHttpClient implements GovernanceClient {
@@ -54,14 +70,20 @@ export class AiwardenHttpClient implements GovernanceClient {
   private readonly tool: string;
   private readonly tenantId: string;
   private readonly userId: string;
+  private readonly adminUserId: string;
   private readonly timeoutMs: number;
+  private readonly usagePollAttempts: number;
+  private readonly usagePollIntervalMs: number;
 
   public constructor(options: AiwardenHttpOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "http://localhost:8080").replace(/\/+$/, "");
     this.tool = options.tool ?? "create_ticket";
     this.tenantId = options.tenantId ?? process.env.AIWARDEN_TENANT_ID ?? "1";
     this.userId = options.userId ?? process.env.AIWARDEN_USER_ID ?? "playtest-agent";
+    this.adminUserId = options.adminUserId ?? process.env.AIWARDEN_ADMIN_USER_ID ?? "1";
     this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.usagePollAttempts = options.usagePollAttempts ?? 30;
+    this.usagePollIntervalMs = options.usagePollIntervalMs ?? 300;
   }
 
   async invoke(params: {
@@ -90,6 +112,8 @@ export class AiwardenHttpClient implements GovernanceClient {
         businessKey: params.businessKey,
         replayed: true,
         ...(res.result?.["traceId"] ? { traceId: String(res.result["traceId"]) } : {}),
+        tokenSource: "unavailable",
+        tokensUnavailableReason: "单次工具调用响应不含成本，需按 session 查询用量",
       };
     }
 
@@ -103,7 +127,60 @@ export class AiwardenHttpClient implements GovernanceClient {
       businessKey: params.businessKey,
       replayed: false,
       ...(res.result?.["traceId"] ? { traceId: String(res.result["traceId"]) } : {}),
+      tokenSource: "unavailable",
+      tokensUnavailableReason: "单次工具调用响应不含成本，需按 session 查询用量",
     };
+  }
+
+  /**
+   * 按 session 查询 aiwarden 的用量明细。
+   *
+   * aiwarden 的计量走 Outbox → Kafka → `t_llm_call_log`，是异步的；
+   * 因此做有限轮询。仍拿不到就显式 `unavailable`，**不填 0**。
+   */
+  async queryUsage(params: {
+    readonly session: string;
+    readonly expectedSteps?: readonly number[];
+    readonly since?: number;
+  }): Promise<GovernanceUsage> {
+    let lastReason = "aiwarden usage 在该 session 暂无记录（可能尚未落库）";
+    const expected = params.expectedSteps ?? [];
+
+    for (let attempt = 0; attempt < this.usagePollAttempts; attempt += 1) {
+      try {
+        const rows = await this.getUsageRows(params.session, params.since);
+        const byStep = aggregateUsage(rows);
+        const missing = expected.filter(
+          (stepNo) => !byStep.some((entry) => entry.stepNo === stepNo),
+        );
+
+        if (byStep.length > 0 && missing.length === 0) {
+          return { source: "governance-usage", byStep };
+        }
+        if (byStep.length > 0 && missing.length > 0) {
+          lastReason = `aiwarden usage 仍缺 ${missing.length} 步记录（${missing
+            .slice(0, 8)
+            .join(", ")}）`;
+        }
+        if (rows.length > 0 && byStep.length === 0) {
+          lastReason = "aiwarden usage 记录缺少 stepNo，无法按步骤归因";
+        }
+      } catch (error) {
+        return {
+          source: "unavailable",
+          byStep: [],
+          unavailableReason: `aiwarden usage 查询失败：${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        };
+      }
+
+      if (attempt < this.usagePollAttempts - 1) {
+        await sleep(this.usagePollIntervalMs);
+      }
+    }
+
+    return { source: "unavailable", byStep: [], unavailableReason: lastReason };
   }
 
   /**
@@ -118,7 +195,7 @@ export class AiwardenHttpClient implements GovernanceClient {
    * 若直接把 `digest` 当 `orderRef`，则「不同 session 的同一动作」会撞同一个 orderRef →
    * 被 `ON CONFLICT DO NOTHING` 吞掉 → **副作用静默丢失**（实测踩到，契约测试抓到）。
    *
-   * 正确做法：`orderRef` = **完整**的幂等键（businessKey:session:stepNo:digest），
+   * 正确做法：`orderRef` = **完整**的幂等键（businessKey::session::stepNo::digest），
    * 它由 aiwarden 侧再哈希一次得到自己的 idemKey —— 两侧语义一致且互不干扰。
    */
   private buildInput(params: {
@@ -146,6 +223,31 @@ export class AiwardenHttpClient implements GovernanceClient {
         250,
       ),
     };
+  }
+
+  private async getUsageRows(session: string, since?: number): Promise<readonly UsageRow[]> {
+    const query = new URLSearchParams({
+      sessionId: session,
+      limit: "500",
+    });
+    // 同一个 scenario+seed 会复用 session key；用 run 起始时间隔离历史行，
+    // 否则「查到了任意一条」会被上一轮的数据提前满足。
+    if (since !== undefined) query.set("from", new Date(since).toISOString());
+    const path = `/api/v1/admin/usage?${query.toString()}`;
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      headers: {
+        "X-Aiwarden-Tenant-Id": this.tenantId,
+        // 用量接口走 requireUserIdAsLong()，必须是数值主体。
+        "X-Aiwarden-User-Id": this.adminUserId,
+      },
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`GET ${path} → HTTP ${res.status} ${text.slice(0, 200)}`);
+    }
+    const body = JSON.parse(text) as unknown;
+    return Array.isArray(body) ? (body as UsageRow[]) : [];
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
@@ -188,4 +290,50 @@ interface ToolInvokeResponse {
   readonly error?: string;
   readonly idemKey?: string;
   readonly replayed: boolean;
+}
+
+/**
+ * aiwarden `/api/v1/admin/usage` 的条目。
+ * 同时兼容 Jackson 默认 camelCase 与可能的 snake_case。
+ */
+interface UsageRow {
+  readonly stepNo?: number;
+  readonly step_no?: number;
+  readonly tool?: string;
+  readonly promptTokens?: number;
+  readonly prompt_tokens?: number;
+  readonly completionTokens?: number;
+  readonly completion_tokens?: number;
+}
+
+function aggregateUsage(rows: readonly UsageRow[]): GovernanceUsageEntry[] {
+  const byStep = new Map<number, { prompt: number; completion: number; tool: string }>();
+
+  for (const row of rows) {
+    const stepNo = row.stepNo ?? row.step_no;
+    if (typeof stepNo !== "number" || !Number.isFinite(stepNo)) continue;
+    const prompt = row.promptTokens ?? row.prompt_tokens ?? 0;
+    const completion = row.completionTokens ?? row.completion_tokens ?? 0;
+    const current = byStep.get(stepNo) ?? {
+      prompt: 0,
+      completion: 0,
+      tool: row.tool ?? "aiwarden",
+    };
+    current.prompt += prompt;
+    current.completion += completion;
+    byStep.set(stepNo, current);
+  }
+
+  return [...byStep.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([stepNo, value]) => ({
+      stepNo,
+      promptTokens: value.prompt,
+      completionTokens: value.completion,
+      tool: value.tool,
+    }));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

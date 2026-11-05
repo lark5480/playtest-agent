@@ -38,6 +38,16 @@ export interface IdempotencyFingerprint {
 }
 
 /**
+ * 成本/token 的来源口径。
+ *
+ * - `model-usage`：模型响应里的 usage（真实 token）
+ * - `governance-usage`：治理侧用量明细（aiwarden 工具调用配额当量）
+ * - `synthetic`：内存替身的固定模拟值，**不是**真实成本
+ * - `unavailable`：本应可归因但未拿到，报告必须显式说明
+ */
+export type TokenSource = "model-usage" | "governance-usage" | "synthetic" | "unavailable";
+
+/**
  * 治理证据：这一步在治理侧的凭据。
  *
  * 成本归因四维（租户 / 会话 / 步骤 / 工具）在 aiwarden 侧落库；
@@ -50,8 +60,12 @@ export interface GovernanceEvidence {
   readonly elapsedMs: number;
   /** 治理侧 traceId（可与 aiwarden 的 trace 串联）。 */
   readonly traceId?: string;
-  /** 本步消耗的 token 数（无模型调用时为 0）。 */
+  /** 本步治理侧消耗的 token 数（无治理调用/未取得时不填）。 */
   readonly tokens?: number;
+  /** 治理侧 token 数的来源口径。 */
+  readonly tokenSource?: TokenSource;
+  /** 未取得治理侧成本时的显式原因。 */
+  readonly tokensUnavailableReason?: string;
 }
 
 /**
@@ -77,6 +91,10 @@ export interface StepRecord {
   readonly degraded: boolean;
   /** 降级原因。 */
   readonly degradedReason?: string;
+  /** 模型调用消耗的 token 数（确定性基线 / 未取得时为不填）。 */
+  readonly llmTokens?: number;
+  /** 实际参与决策的模型标识（未使用模型时不填）。 */
+  readonly model?: string;
   /** 执行结果。 */
   readonly outcome: StepOutcome;
   /** 执行后观察；执行失败时为 null。 */

@@ -1,8 +1,8 @@
 /**
  * 场景定义。
  *
- * 场景是"跑什么"的声明：步数上限与说明。
- * 具体策略、断言、治理配置在 CLI 组装时决定（见 `src/cli.ts`）。
+ * 当前全部是**内置场景**；根目录 `scenarios/` 预留给后续外部场景，
+ * 目前尚未接入加载器 —— 不要在注释里假装它会自动读 JSON。
  */
 
 export interface Scenario {
@@ -39,7 +39,7 @@ export const BUILTIN_SCENARIOS: readonly Scenario[] = [
 ];
 
 /**
- * 加载全部场景（内置 + `scenarios/` 目录下的 JSON）。
+ * 加载全部场景（当前为内置场景）。
  */
 export function loadScenarios(): Scenario[] {
   return [...BUILTIN_SCENARIOS];

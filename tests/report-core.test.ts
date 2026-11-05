@@ -113,3 +113,54 @@ test("Markdown 渲染是纯函数（同输入同输出）", () => {
   const report = buildReportJson({ ...base, steps: [step()], findings: [] });
   assert.equal(renderReportMarkdown(report), renderReportMarkdown(report));
 });
+
+test("治理证据：traceId / llmTokens / governanceTokens 进入步骤与汇总", () => {
+  const report = buildReportJson({
+    ...base,
+    steps: [
+      step({
+        llmTokens: 12,
+        model: "test-model",
+        governance: {
+          replayed: false,
+          elapsedMs: 1,
+          traceId: "trace-abc-123",
+          tokens: 10,
+          tokenSource: "synthetic",
+        },
+      }),
+    ],
+    findings: [],
+    governanceSource: "in-memory",
+  });
+
+  assert.equal(report.steps[0]?.traceId, "trace-abc-123");
+  assert.equal(report.steps[0]?.llmTokens, 12);
+  assert.equal(report.steps[0]?.governanceTokens, 10);
+  assert.deepEqual(report.steps[0]?.tokenSources, ["model-usage", "synthetic"]);
+  assert.equal(report.usage.llm, 12);
+  assert.equal(report.usage.governance, 10);
+  assert.equal(report.usage.total, 22);
+  assert.deepEqual(report.usage.sources, ["model-usage", "synthetic"]);
+  assert.equal(report.usage.unavailableSteps, 0);
+
+  const md = renderReportMarkdown(report);
+  assert.ok(md.includes("## 治理证据"));
+  assert.ok(md.includes("trace-abc"));
+  assert.ok(md.includes("llm:12"));
+  assert.ok(md.includes("gov:10"));
+  assert.ok(md.includes("不代表真实成本"));
+});
+
+test("成本缺失不填 0：无可归因数据时 unavailableSteps 正确计数", () => {
+  const report = buildReportJson({
+    ...base,
+    steps: [step(), step({ stepNo: 1 })],
+    findings: [],
+    governanceSource: "aiwarden-http",
+  });
+
+  assert.equal(report.usage.total, 0);
+  assert.equal(report.usage.unavailableSteps, 2);
+  assert.ok(renderReportMarkdown(report).includes("有 2 步未取得成本数据"));
+});

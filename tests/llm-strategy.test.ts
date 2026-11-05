@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { LlmStrategy, type LlmClient } from "../src/strategy/llm.js";
+import { LlmStrategy, type LlmClient, type LlmPickResult } from "../src/strategy/llm.js";
 import type { Observation } from "../src/types/game.js";
 
 function observation(): Observation {
@@ -57,30 +57,40 @@ test("模型调用失败 → 降级且不抛错", async () => {
 test("模型返回非法动作 → 降级且不采纳", async () => {
   const rogue: LlmClient = {
     name: "rogue",
-    pickAction: async () => "not-a-legal-action",
+    pickAction: async () => ({
+      actionId: "not-a-legal-action",
+      usage: { promptTokens: 5, completionTokens: 1, totalTokens: 6 },
+    }),
   };
   const strategy = new LlmStrategy(rogue);
   const d = await strategy.decide({ observation: observation(), seed: 1 });
   assert.equal(d.degraded, true);
   assert.notEqual(d.action?.id, "not-a-legal-action", "不得采纳越界动作");
   assert.ok(d.action, "降级后仍要给出合法动作");
+  assert.equal(d.llmTokens, 6, "越界动作也消耗了模型 token，必须入账");
+  assert.equal(d.model, "rogue");
 });
 
-test("模型正常返回合法动作 → 不降级", async () => {
+test("模型正常返回合法动作 → 不降级且记录 usage", async () => {
   const good: LlmClient = {
     name: "good",
-    pickAction: async () => "b",
+    pickAction: async () => ({
+      actionId: "b",
+      usage: { promptTokens: 5, completionTokens: 2, totalTokens: 7 },
+    }),
   };
   const strategy = new LlmStrategy(good);
   const d = await strategy.decide({ observation: observation(), seed: 1 });
   assert.equal(d.degraded, false);
   assert.equal(d.action?.id, "b");
+  assert.equal(d.llmTokens, 7);
+  assert.equal(d.model, "good");
 });
 
 test("模型超时 → 降级（不无限等待）", async () => {
   const slow: LlmClient = {
     name: "slow",
-    pickAction: () => new Promise(() => {}),
+    pickAction: () => new Promise<LlmPickResult>(() => {}),
   };
   const strategy = new LlmStrategy(slow, 50);
   const d = await strategy.decide({ observation: observation(), seed: 1 });

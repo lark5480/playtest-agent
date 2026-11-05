@@ -145,6 +145,8 @@ jobs:
           PLAYTEST_REQUIRE_INTEGRATION: "1"
           AIWARDEN_BASE_URL: http://localhost:8080
           AIWARDEN_TOOL: create_ticket
+          # /api/v1/admin/usage 要求数值主体；与工具入口的字符串主体分开。
+          AIWARDEN_ADMIN_USER_ID: "1"
         run: npm run test:integration:aiwarden
 
       # 失败时仅收集本机启动日志（无凭证，容器口令是 compose 里的演示值）。

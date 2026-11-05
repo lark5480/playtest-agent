@@ -19,13 +19,17 @@
 
 import {
   analyzeHistory,
+  applyMove,
   generateLegalMoves,
   moveId,
   parseFen,
   positionToFen,
+  squareIndex,
   squareName,
   startPosition,
 } from "../core/chess-rules.js";
+import type { ChessMove } from "../core/chess-rules.js";
+import { hashOf } from "../core/state-hash.js";
 import type { Action, GameState, Observation } from "../types/game.js";
 
 import type { GameAdapter } from "./game-adapter.js";
@@ -208,6 +212,77 @@ export class ChessArenaAdapter implements GameAdapter {
     const state = params.state;
     if (state.status === "finished") return true;
     return state.turn !== null && state.legalActions.length === 0;
+  }
+
+  /**
+   * 续跑用的状态摘要。
+   *
+   * payload 里的 `moves` 是服务端 SAN（展示用），`fenHistory` 已覆盖同一信息；
+   * 投影时无法本地生成 SAN，因此摘要只纳入能稳定投影的字段。
+   */
+  stateDigest(params: { readonly state: GameState }): string {
+    const payload = params.state.payload;
+    return hashOf({
+      status: params.state.status,
+      turn: params.state.turn,
+      fen: payload["fen"],
+      moveCount: payload["moveCount"],
+      fenHistory: payload["fenHistory"],
+    });
+  }
+
+  /**
+   * 本地投影走子后的局面（**不产生任何副作用**）。
+   *
+   * 只用于续跑判定：从当前 FEN + 动作找到对应的合法着，应用后重算
+   * 终局/换边，再把可参与 `stateDigest` 的字段投影出来。
+   */
+  projectAfter(params: { readonly state: GameState; readonly action: Action }): GameState | null {
+    const fen = params.state.payload["fen"];
+    if (typeof fen !== "string") return null;
+
+    let from: number;
+    let to: number;
+    try {
+      from = squareIndex(String(params.action.payload["from"] ?? ""));
+      to = squareIndex(String(params.action.payload["to"] ?? ""));
+    } catch {
+      return null;
+    }
+    const promotion = params.action.payload["promotion"];
+
+    const position = parseFen(fen);
+    const move = generateLegalMoves(position).find(
+      (candidate) =>
+        candidate.from === from &&
+        candidate.to === to &&
+        (candidate.promotion ?? "") === (promotion ?? ""),
+    );
+    if (!move) return null;
+
+    const after = applyMove(position, move as ChessMove);
+    const afterFen = positionToFen(after);
+    const fenHistory = [...this.readFenHistory(params.state), afterFen];
+    const legalActions = this.computeLegalActions(afterFen);
+
+    const historyDraw = analyzeHistory(fenHistory).reason;
+    const finished = legalActions.length === 0 || historyDraw !== null;
+    const moveCount = Number(params.state.payload["moveCount"] ?? 0) + 1;
+
+    return {
+      id: params.state.id,
+      status: finished ? "finished" : "playing",
+      turn: finished ? null : after.turn === "w" ? "white" : "black",
+      legalActions: finished ? [] : legalActions,
+      payload: {
+        fen: afterFen,
+        moveCount,
+        moves: [...this.readMoves(params.state), "projected"],
+        fenHistory,
+        result: null,
+        seq: moveCount,
+      },
+    };
   }
 
   // ---------------------------------------------------------------- 内部

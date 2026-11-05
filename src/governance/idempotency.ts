@@ -9,23 +9,19 @@
  * 不做哈希（aiwarden 侧会再算一次指纹），保持两侧可对照。
  */
 
+import { fingerprintKey } from "../core/fingerprint.js";
 import type { IdempotencyFingerprint } from "../types/step.js";
 
 /**
  * 幂等键的字符串形式。
  *
- * 格式：`{businessKey}::{session}::{stepNo}::{digest}`
+ * 格式由 `core/fingerprint.ts` 单点定义：
+ * `{businessKey}::{session}::{stepNo}::{digest}`
  *
- * 用 `::` 分隔而非 `:` —— 业务键本身可能含冒号（房间码虽不含，但业务键是开放的），
- * 双冒号降低歧义。
+ * 这里只做委托与校验，避免出现第二套拼法。
  */
 export function buildIdempotencyKey(fingerprint: IdempotencyFingerprint): string {
-  return [
-    fingerprint.businessKey,
-    fingerprint.session,
-    String(fingerprint.stepNo),
-    fingerprint.digest,
-  ].join("::");
+  return fingerprintKey(fingerprint);
 }
 
 /**

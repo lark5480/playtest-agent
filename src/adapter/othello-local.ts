@@ -121,7 +121,7 @@ export class OthelloLocalAdapter implements GameAdapter {
    * 从凭证恢复一局。
    *
    * 房间是内存态的，游戏进程没重启就能恢复；重启后房间丢失 → 返回 null
-   * （调用方应重建对局并从检查点重放动作，靠幂等键保证不重复生效）。
+   * （驱动会显式失败并保留检查点，不自动重建一局）。
    */
   async resume(params: { readonly token: string }): Promise<{ state: GameState } | null> {
     const { roomId } = this.parseToken(params.token);
@@ -197,6 +197,73 @@ export class OthelloLocalAdapter implements GameAdapter {
     return s.turn !== null && s.legalActions.length === 0;
   }
 
+  /**
+   * 本地投影执行落子后的状态（**不产生任何副作用**）。
+   *
+   * 只用于续跑判定。投影必须与游戏服务端的结果逐字段一致；
+   * 对不上时驱动会显式失败，而不是猜。
+   */
+  projectAfter(params: { readonly state: GameState; readonly action: Action }): GameState | null {
+    const rawBoard = params.state.payload["board"];
+    if (!Array.isArray(rawBoard) || rawBoard.length !== BOARD_SIZE) return null;
+    const board = rawBoard as number[][];
+
+    const row = Number(params.action.payload["row"]);
+    const col = Number(params.action.payload["col"]);
+    if (!Number.isInteger(row) || !Number.isInteger(col)) return null;
+    if (row < 0 || row >= BOARD_SIZE || col < 0 || col >= BOARD_SIZE) return null;
+
+    const turn =
+      params.state.turn === "black" ? BLACK : params.state.turn === "white" ? WHITE : null;
+    if (turn === null) return null;
+
+    const flips = this.flipsFor(board, row, col, turn);
+    if (flips.length === 0) return null;
+
+    const nextBoard = board.map((line) => [...line]);
+    nextBoard[row]![col] = turn;
+    for (const [r, c] of flips) nextBoard[r]![c] = turn;
+
+    const me = turn === BLACK ? "black" : "white";
+    const opp = me === "black" ? "white" : "black";
+    const oppMoves = this.computeLegalActions(nextBoard, opp);
+    const myMoves = this.computeLegalActions(nextBoard, me);
+
+    let status: GameState["status"] = "playing";
+    let nextTurn: "black" | "white" | null = opp;
+    let winner: "black" | "white" | "draw" | null = null;
+
+    if (oppMoves.length === 0) {
+      if (myMoves.length === 0) {
+        status = "finished";
+        nextTurn = null;
+        const blackCount = countStones(nextBoard, BLACK);
+        const whiteCount = countStones(nextBoard, WHITE);
+        winner = blackCount > whiteCount ? "black" : whiteCount > blackCount ? "white" : "draw";
+      } else {
+        // 对方无子可下 → 跳过，保持当前回合
+        nextTurn = me;
+      }
+    }
+
+    const moveCount = Number(params.state.payload["moveCount"] ?? 0) + 1;
+    return {
+      id: params.state.id,
+      status,
+      turn: nextTurn,
+      legalActions:
+        status === "finished" || nextTurn === null
+          ? []
+          : this.computeLegalActions(nextBoard, nextTurn),
+      payload: {
+        board: nextBoard,
+        moveCount,
+        winner,
+        seq: moveCount,
+      },
+    };
+  }
+
   // ---------------------------------------------------------------- 内部
 
   /** 把服务端公开状态转成 Agent 的 GameState。 */
@@ -226,40 +293,54 @@ export class OthelloLocalAdapter implements GameAdapter {
    */
   private computeLegalActions(board: number[][], turn: "black" | "white"): Action[] {
     const me = turn === "black" ? BLACK : WHITE;
-    const opp = turn === "black" ? WHITE : BLACK;
     const actions: Action[] = [];
 
     for (let row = 0; row < BOARD_SIZE; row++) {
       for (let col = 0; col < BOARD_SIZE; col++) {
-        if (board[row]?.[col] !== EMPTY) continue;
-        let valid = false;
-        for (const [dr, dc] of DIRECTIONS) {
-          let r = row + dr;
-          let c = col + dc;
-          let seen = 0;
-          while (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE && board[r]?.[c] === opp) {
-            seen += 1;
-            r += dr;
-            c += dc;
-          }
-          if (
-            seen > 0 &&
-            r >= 0 &&
-            r < BOARD_SIZE &&
-            c >= 0 &&
-            c < BOARD_SIZE &&
-            board[r]?.[c] === me
-          ) {
-            valid = true;
-            break;
-          }
-        }
-        if (valid) {
-          actions.push({ id: `${row},${col}`, payload: { row, col } });
-        }
+        if (this.flipsFor(board, row, col, me).length === 0) continue;
+        actions.push({ id: `${row},${col}`, payload: { row, col } });
       }
     }
     return actions;
+  }
+
+  /**
+   * 在指定落点能夹住并翻转的对方棋子坐标。
+   *
+   * 与合法动作生成共用同一套方向规则，避免「能下」与「翻哪些」两处逻辑漂移。
+   */
+  private flipsFor(
+    board: number[][],
+    row: number,
+    col: number,
+    me: number,
+  ): Array<[number, number]> {
+    if (board[row]?.[col] !== EMPTY) return [];
+    const opp = me === BLACK ? WHITE : BLACK;
+    const flips: Array<[number, number]> = [];
+
+    for (const [dr, dc] of DIRECTIONS) {
+      const line: Array<[number, number]> = [];
+      let r = row + dr;
+      let c = col + dc;
+      while (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE && board[r]?.[c] === opp) {
+        line.push([r, c]);
+        r += dr;
+        c += dc;
+      }
+      if (
+        line.length > 0 &&
+        r >= 0 &&
+        r < BOARD_SIZE &&
+        c >= 0 &&
+        c < BOARD_SIZE &&
+        board[r]?.[c] === me
+      ) {
+        flips.push(...line);
+      }
+    }
+
+    return flips;
   }
 
   private parseToken(token: string): { roomId: string; blackId: string; whiteId: string } {
@@ -328,3 +409,13 @@ const DIRECTIONS: ReadonlyArray<readonly [number, number]> = [
   [1, -1],
   [1, 1],
 ];
+
+function countStones(board: number[][], color: number): number {
+  let count = 0;
+  for (const row of board) {
+    for (const cell of row) {
+      if (cell === color) count += 1;
+    }
+  }
+  return count;
+}
