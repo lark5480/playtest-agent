@@ -1,0 +1,166 @@
+name: AIWarden nightly (real stack)
+
+on:
+  # UTC 18:00 = Asia/Shanghai 次日 02:00（夜间低峰）
+  schedule:
+    - cron: "0 18 * * *"
+  # 保留手动触发，便于合并后或排障时立刻验证真实链路。
+  workflow_dispatch:
+
+# 只读仓库内容；本任务不写回仓库，也不消费任何凭证。
+permissions:
+  contents: read
+
+# 真实栈占固定端口与容器名，同一时间只跑一份，避免自撞。
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  # 与主 CI 同一条 Node 24 安全修复线。
+  NODE_VERSION: 24.22.1
+
+jobs:
+  aiwarden-real:
+    name: Integration · aiwarden (nightly · real stack)
+    runs-on: ubuntu-latest
+    # 冷启动含 Maven 依赖下载、镜像拉取与应用启动；给足预算，但不使用默认 360 分钟掩盖卡死。
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies (agent)
+        run: npm ci
+
+      # aiwarden 是公开仓库，可匿名 clone；只读消费，不改它的源码。
+      - name: Checkout aiwarden
+        uses: actions/checkout@v4
+        with:
+          repository: lark5480/aiwarden
+          path: aiwarden
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: aiwarden/pom.xml
+
+      # PG / Redis / Kafka / MinIO；--wait 会等带 healthcheck 的服务健康、无 healthcheck 的服务起步。
+      - name: Start infrastructure
+        working-directory: aiwarden
+        run: docker compose up -d --wait --wait-timeout 300
+
+      # --wait 已等过一轮，这里再显式核验带 healthcheck 的三个服务，避免"启动即返回"的假绿。
+      - name: Verify infrastructure health
+        working-directory: aiwarden
+        run: |
+          for i in $(seq 1 30); do
+            ok=1
+            for c in aiwarden-postgres aiwarden-redis aiwarden-kafka; do
+              status=$(docker inspect -f '{{.State.Health.Status}}' "$c" 2>/dev/null || echo missing)
+              if [ "$status" != "healthy" ]; then
+                echo "$c = $status"
+                ok=0
+              fi
+            done
+            if [ "$ok" = "1" ]; then
+              echo "postgres / redis / kafka healthy"
+              docker compose ps
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "infrastructure did not become healthy"
+          docker compose ps
+          exit 1
+
+      - name: Build aiwarden modules
+        working-directory: aiwarden
+        run: mvn -B -ntp -DskipTests install
+
+      - name: Package aiwarden-start jar
+        working-directory: aiwarden
+        run: mvn -B -ntp -DskipTests -pl aiwarden-start package
+
+      - name: Start aiwarden
+        working-directory: aiwarden
+        env:
+          # compose 在宿主机只发布 29092（9092 在部分环境落在保留端口区间），
+          # 应用默认连 9092，必须显式覆盖。
+          SPRING_KAFKA_BOOTSTRAP_SERVERS: localhost:29092
+        run: |
+          jar=$(ls aiwarden-start/target/aiwarden-start-*.jar | head -n 1)
+          echo "starting $jar"
+          java -jar "$jar" > aiwarden-start.log 2>&1 &
+
+      # 只等端口不算就绪：Flyway 迁移、Redis/Kafka 装配都要完成才真正可用。
+      # 预算 90s（45 次 × 2s）；超时打印启动日志后失败。
+      - name: Wait for aiwarden health (UP)
+        working-directory: aiwarden
+        run: |
+          for i in $(seq 1 45); do
+            if curl -sf http://localhost:8080/actuator/health | grep -q '"status":"UP"'; then
+              echo "aiwarden is UP"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "aiwarden did not become healthy within 90s"
+          tail -n 200 aiwarden-start.log
+          exit 1
+
+      # 租户是接口身份头的硬前提（缺失即 400）；建完回读实际 id，避免假设种子数据。
+      - name: Create tenant and read back id
+        run: |
+          docker exec aiwarden-postgres psql -U aiwarden -d aiwarden \
+            -c "INSERT INTO t_tenant (name) VALUES ('playtest-agent') ON CONFLICT (name) DO NOTHING;"
+          tenant_id=$(docker exec aiwarden-postgres psql -U aiwarden -d aiwarden -tAc \
+            "SELECT id FROM t_tenant WHERE name = 'playtest-agent';" | tr -d '[:space:]')
+          if ! [[ "$tenant_id" =~ ^[0-9]+$ ]]; then
+            echo "未能读到租户 id（实际：'$tenant_id'）"
+            exit 1
+          fi
+          echo "AIWARDEN_TENANT_ID=$tenant_id" >> "$GITHUB_ENV"
+          echo "tenant id = $tenant_id"
+
+      # 强制模式：依赖不可达即失败，不允许 skip 兜绿；断言也不放宽。
+      - name: Integration tests (required)
+        env:
+          PLAYTEST_REQUIRE_INTEGRATION: "1"
+          AIWARDEN_BASE_URL: http://localhost:8080
+          AIWARDEN_TOOL: create_ticket
+        run: npm run test:integration:aiwarden
+
+      # 失败时仅收集本机启动日志（无凭证，容器口令是 compose 里的演示值）。
+      - name: Collect startup logs (failure only)
+        if: failure()
+        working-directory: aiwarden
+        run: docker compose logs > docker-services.log 2>&1 || true
+
+      - name: Upload startup logs (failure only)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aiwarden-nightly-logs
+          path: |
+            aiwarden/aiwarden-start.log
+            aiwarden/docker-services.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Stop infrastructure
+        if: always()
+        working-directory: aiwarden
+        run: docker compose down -v
