@@ -309,7 +309,7 @@ jobs:
   # duel.spec.ts 自带 420s 超时，因此 job 单独给 15 分钟，不靠放宽掩盖。
   # 服务由 Playwright 的 webServer 自己起：上游 01b8c96 起 `reuseExistingServer: false`，
   # 并在配置加载阶段检查端口，3100 被占就直接报错。本 job 不再预启动服务，
-  # 否则等于和上游的“干净测试服务”策略对撞。
+  # 否则等于和上游的“干净测试服务”策略对撞。约定见 docs/TESTING.md §4「e2e-tongshi 的启动约定」。
   e2e-tongshi:
     name: E2E · tongshi-ju (Playwright)
     runs-on: ubuntu-latest
