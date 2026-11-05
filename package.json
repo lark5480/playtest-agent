@@ -2,6 +2,7 @@
   "name": "playtest-agent",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "AI 游戏自动测试 Agent —— 自主开局、按策略游玩、为每步产出治理证据、产出可复现缺陷报告",
   "type": "module",
   "engines": {
