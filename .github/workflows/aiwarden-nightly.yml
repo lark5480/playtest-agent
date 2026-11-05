@@ -57,12 +57,16 @@ jobs:
           cache: maven
           cache-dependency-path: aiwarden/pom.xml
 
-      # PG / Redis / Kafka / MinIO；--wait 会等带 healthcheck 的服务健康、无 healthcheck 的服务起步。
+      # 只起治理链路实际依赖的 PG / Redis / Kafka。
+      # MinIO 的 compose tag（minio/minio:RELEASE.2025-09-07T16-13-09Z）在上游已不可拉取
+      # （实测 2026-11-05：pull access denied，repository does not exist），
+      # 且 aiwarden 代码与配置没有任何 MinIO 引用，治理集成不触碰对象存储。
+      # 与其静默跳过整段启动，不如显式只起需要的服务，并在报告里写明这一偏差。
       - name: Start infrastructure
         working-directory: aiwarden
-        run: docker compose up -d --wait --wait-timeout 300
+        run: docker compose up -d --wait --wait-timeout 300 postgres redis kafka kafka-proxy
 
-      # --wait 已等过一轮，这里再显式核验带 healthcheck 的三个服务，避免"启动即返回"的假绿。
+      # --wait 已等过一轮，这里再显式核验三个带 healthcheck 的服务，避免"启动即返回"的假绿。
       - name: Verify infrastructure health
         working-directory: aiwarden
         run: |
