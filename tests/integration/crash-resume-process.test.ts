@@ -11,12 +11,11 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 
-import { startOthelloStubServer } from "../helpers/othello-stub-server.js";
+import { startOthelloStubServer } from "../../src/demo/othello-server.js";
 
 interface CliResult {
   readonly code: number | null;
@@ -60,7 +59,8 @@ function runCli(args: readonly string[], env: NodeJS.ProcessEnv): Promise<CliRes
 
 test("真进程：崩溃 → 检查点 → CLI --resume 完成整局", async () => {
   const server = await startOthelloStubServer();
-  const dir = mkdtempSync(join(tmpdir(), "playtest-resume-"));
+  mkdirSync(resolve("reports/checkpoints"), { recursive: true });
+  const dir = mkdtempSync(resolve("reports/checkpoints/playtest-resume-"));
   const checkpointPath = join(dir, "crash.json");
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -113,7 +113,7 @@ test("真进程：崩溃 → 检查点 → CLI --resume 完成整局", async () 
       stepCount: number;
       replayedSteps: number;
       failedSteps: number;
-      usage: { governance: number };
+      usage: { governance: number | null; synthetic: number | null; unavailableSteps: number };
       steps: { stepNo: number; outcome: string }[];
     };
 
@@ -122,7 +122,12 @@ test("真进程：崩溃 → 检查点 → CLI --resume 完成整局", async () 
     assert.ok(report.replayedSteps >= 1, "pending 步应记为重放");
     assert.equal(report.steps[10]?.outcome, "replayed", "第 10 步应判定为重放");
     assert.ok(report.stepCount > 10, "续跑后应继续走完");
-    assert.ok(report.usage.governance > 0, "报告应包含治理侧成本");
+    assert.equal(report.usage.governance, null, "内存替身的合成值不能冒充真实治理成本");
+    if (report.usage.synthetic === null) {
+      assert.ok(report.usage.unavailableSteps > 0, "部分步骤无用量时必须显式计为 unavailable");
+    } else {
+      assert.ok(report.usage.synthetic > 0, "替身合成值只能落在 synthetic 口径");
+    }
 
     rmSync(reportPath, { force: true });
     rmSync(jsonPath, { force: true });

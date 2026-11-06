@@ -108,6 +108,34 @@ function afterValidMove(): {
 
 const oracle = new OthelloOracle();
 
+test("初始/最终零动作也检查棋盘、累计棋子数和终局 winner", () => {
+  const initial = observation(initialBoard());
+  assert.deepEqual(
+    oracle.assert({ before: initial, after: initial, action: null, outcome: "applied" }),
+    [],
+  );
+  const board = Array.from({ length: 8 }, () => Array.from({ length: 8 }, () => BLACK));
+  const final = observation(board, {
+    status: "finished",
+    turn: null,
+    legalActions: [],
+    payload: { board, moveCount: 60, winner: "white" },
+  });
+  const codes = oracle
+    .assert({ before: final, after: final, action: null, outcome: "applied" })
+    .map((v) => v.code);
+  assert.deepEqual(codes, ["OTH9-winner-mismatch"]);
+  const premature = {
+    ...initial,
+    state: { ...initial.state, status: "finished" as const, turn: null, legalActions: [] },
+  };
+  assert.ok(
+    oracle
+      .assert({ before: premature, after: premature, action: null, outcome: "applied" })
+      .some((v) => v.code === "OTH9-premature-finish"),
+  );
+});
+
 test("合法一步：OTH2/OTH8/OTH10 均不误报", () => {
   const { before, after, action } = afterValidMove();
   assert.deepEqual(oracle.assert({ before, after, action, outcome: "applied" }), []);
@@ -126,6 +154,10 @@ test("OTH2：翻转位置不对 → 逐格投影不一致", () => {
   };
   const violations = oracle.assert({ before, after: bad, action, outcome: "applied" });
   assert.ok(violations.some((violation) => violation.code === "OTH2-board-projection-mismatch"));
+  assert.deepEqual(
+    violations.find((violation) => violation.code === "OTH2-board-projection-mismatch")?.evidence,
+    [{ field: "board[3][3]", expected: BLACK, actual: WHITE }],
+  );
 });
 
 test("OTH8：服务端合法集与本地计算不一致 → fatal", () => {

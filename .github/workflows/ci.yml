@@ -55,8 +55,29 @@ jobs:
       - name: Crash resume (process level)
         run: npm run test:integration:resume
 
+      - name: Defect replay (process level)
+        run: npm run test:integration:replay
+
+      - name: Model budget (local fake service)
+        run: npm run test:integration:budget
+
       - name: Production build
         run: npm run build
+
+  windows-recovery:
+    name: Windows · checkpoint and replay
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run test:integration:resume
+      - run: npm run test:integration:replay
+      - run: npm run test:integration:budget
 
   # 端到端：verify 全绿不代表"Agent 真能跑完一局"。
   # 这一段把被测游戏拉起来，让 Agent 真的走完一局并产出报告。
@@ -126,7 +147,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: playtest-report
-          path: reports/
+          path: |
+            reports/*.json
+            reports/*.md
+            reports/*.html
+            !reports/checkpoints/**
           retention-days: 7
 
   # 真实集成：把两个被测游戏都拉起来，跑必须通过的集成用例。

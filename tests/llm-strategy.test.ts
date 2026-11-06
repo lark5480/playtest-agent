@@ -50,7 +50,7 @@ test("模型调用失败 → 降级且不抛错", async () => {
   const strategy = new LlmStrategy(failing);
   const d = await strategy.decide({ observation: observation(), seed: 1 });
   assert.equal(d.degraded, true);
-  assert.ok(d.degradedReason?.includes("连接被拒"));
+  assert.equal(d.degradedReason, "模型调用失败");
   assert.ok(d.action, "降级后仍要给出动作");
 });
 
@@ -90,7 +90,10 @@ test("模型正常返回合法动作 → 不降级且记录 usage", async () => 
 test("模型超时 → 降级（不无限等待）", async () => {
   const slow: LlmClient = {
     name: "slow",
-    pickAction: () => new Promise<LlmPickResult>(() => {}),
+    pickAction: ({ signal }) =>
+      new Promise<LlmPickResult>((_, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
   };
   const strategy = new LlmStrategy(slow, 50);
   const d = await strategy.decide({ observation: observation(), seed: 1 });

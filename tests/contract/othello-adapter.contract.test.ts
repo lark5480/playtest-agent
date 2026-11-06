@@ -8,7 +8,7 @@ import { after } from "node:test";
 
 import { OthelloLocalAdapter } from "../../src/adapter/othello-local.js";
 import { registerAdapterContract } from "../../src/adapter/contract-suite.js";
-import { startOthelloStubServer } from "../helpers/othello-stub-server.js";
+import { startOthelloStubServer } from "../../src/demo/othello-server.js";
 
 const stub = await startOthelloStubServer();
 after(async () => {

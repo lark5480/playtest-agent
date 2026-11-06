@@ -27,11 +27,13 @@
 | 能力           | 说明                                                                             |
 | -------------- | -------------------------------------------------------------------------------- |
 | **自主开局**   | 自动注册房间、加入对局、开始游戏 —— 不需要人工摆姿势                             |
-| **确定性游玩** | 同 seed + 同局面 → 同动作。缺陷能稳定复现，报告才有证据价值                      |
+| **确定性游玩** | 基线同 seed + 同局面 → 同动作；模型不重采样复现，改由完整录制动作回放            |
 | **机制断言**   | 每步执行后校验不变量（回合、终局、失败无副作用、合法集、历史连续性…）            |
 | **治理证据**   | 每步带幂等指纹；traceId / 成本按来源标注（治理侧提供时），拿不到标 unavailable   |
-| **成本口径**   | 模型 usage / 治理 usage / 合成值分开记，不拿一个 total 冒充真实成本              |
+| **成本口径**   | 模型 usage / 治理 usage / 合成值分开记，单位的 unknown 不填 0                    |
 | **崩溃续跑**   | 检查点 + pending 意图 + 状态哈希；CLI `--resume`，同 businessKey，不自动新开一局 |
+| **缺陷复现**   | 报告记录公开初局与完整动作；`replay` 在新进程、新房间重放，不问模型              |
+| **模型预算**   | 请求前预扣调用次数；未知用量停止后续付费调用，崩溃恢复不退还额度                 |
 | **降级不崩**   | 模型不可用 → 降级到确定性基线，**仍跑完整局**，报告显式标注降级段                |
 
 ---
@@ -40,6 +42,10 @@
 
 ```bash
 npm install
+
+# 零外部依赖：在本地假服务上发现预置缺陷 → 新进程复现 → 健康实现对照
+npm run demo
+# 产物在 reports/demo-*.json|md|html；summary 明确标注 injected-fixture
 
 # 被测游戏 A：othello-online（自带内存版 /api，无需 EdgeOne 账号或 KV）
 cd ../othello-online && npm install && npm run build && npm run preview
@@ -102,11 +108,29 @@ npm run test:integration:resume  # 进程级崩溃续跑（自带假服务）
 npm run test:integration:llm     # 真实模型（需配置 AI_API_*，否则显式跳过）
 npm run playtest -- --scenario smoke   # 跑 othello 一整局
 npm run playtest -- --scenario chess   # 跑 chess-arena（默认 localhost:3000）
-npm run scan -- --scenario smoke --seeds=1-50   # 多 seed 扫描
+npm run scan -- --scenario smoke --seeds=1-50   # 多 seed 扫描（默认基线，不产生模型费用）
+npm run demo                                   # 发现→新进程复现→健康对照（无密钥）
+npm run replay -- --file=reports/xxx.json --game-url=http://127.0.0.1:5173  # 重放录制动作
 npm run report:html -- --file=reports/xxx.json  # 把已有报告转成可浏览器打开的 HTML
+npm run report:diff -- --before=a.json --after=b.json  # 有条件对比，不可比会说明原因
+npm run test:integration:replay   # 进程级缺陷复现（自带假服务）
+npm run test:integration:budget   # 模型预算跨进程恢复（本地假模型）
 npm run lint && npm run format:check
 npm run build
 ```
+
+### 缺陷复现与模型预算
+
+- **报告 v2** 记录公开初局、完整动作、前后状态、停止原因、来源与首错证据；
+  历史 v1 报告不做补造，`replay` / `diff` 会明确拒绝。
+- `replay` 只接受显式本地 HTTP 目标，重新开局执行已录动作，**不重新询问模型**；
+  到达原首错步且证据一致记 `reproduced`，健康实现同前缀消失记 `not-reproduced`
+  （只证明该前缀，不宣称整局修复）。`--resume` 仍只接回旧房间。
+- `--max-model-calls` 是每局硬上限，`--max-batch-model-calls` 是整批硬上限；
+  `--llm-token-limit` 只是**已知** usage 的软停止线，不会宣称账单硬上限。
+  未知用量记 unknown 并停止后续付费调用，恢复不会退还无结果的在途请求。
+- `--strategy=heuristic|llm|llm-explore`；`scan --compare=heuristic,llm-explore`
+  只比较同 seed、初局、目标、步限与预算的可比窗口。数字是观测事实，不预设 AI 胜出。
 
 ---
 
@@ -114,8 +138,10 @@ npm run build
 
 > 以下是本机实跑输出（2026-11-03，Node v24.22.1）。
 > 被测游戏：`othello-online` 本地 `preview`（内存版 `/api`，**无需 EdgeOne 账号或 KV**）。
-> **历史口径提示**：2026-11-05 起 Heuristic PRNG 改为无状态（`seed + observation.seq`），
-> 动作序列会与本节旧输出不同；当前口径见下一节「2026-11-05 收口实跑」。
+> **历史口径提示**：本节是 2026-11-03 的 v1 报告输出，仅作时点证据。
+> 2026-11-05 起 Heuristic PRNG 改为无状态，动作序列不同；2026-11-06 起报告升级 v2
+> （停止原因、公开初局、完整动作与分源用量），旧 v1 报告不能再用当前 CLI 渲染。
+> 当前口径见「缺陷复现与模型预算」与 [`docs/sample-report.md`](docs/sample-report.md)。
 
 ### 验收 1 · Agent 无人值守自动完成一局
 
@@ -149,7 +175,7 @@ $ npm run playtest -- --scenario smoke --seed=99
 **60 步全部标注降级、原因写明在报告的「降级说明」节、局照样跑完、状态 passed。**
 这就是承诺 C4 的证据：AI 是地基，但地基塌了游戏不崩，且**如实标注**。
 
-### 2026-11-05 收口实跑：治理证据 + 真续跑 + 扫描
+### 2026-11-05 收口实跑：治理证据 + 真续跑 + 扫描（v1 时点证据）
 
 > 这一轮把「报告自证治理证据」和「CLI 真续跑」补齐。运行环境同上。
 
@@ -258,11 +284,13 @@ curl -X PUT http://localhost:8080/api/v1/admin/budgets/1 \
 
 ### 测试结果
 
-| 层   | 用例数 | 通过   | 说明                                                                                                                           |
-| ---- | ------ | ------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| 单元 | 131    | 131    | 纯函数内核、策略、Oracle（含 OTH2/OTH8–10、CHS12–15）、状态哈希、续跑判定、检查点、成本合并、CLI 参数                          |
-| 契约 | 23     | 23     | 治理 9 条（真实 6 实跑 + 3 显式不适用）+ **chess-arena 适配器 7 条** + **othello 适配器 7 条**（本地 HTTP 假服务）             |
-| 集成 | 21     | 视模式 | 游戏链路 4、tongshi duel 5、aiwarden 10（契约 + usage）、真实模型 1、崩溃续跑 2（库内 + 进程级）；依赖不可达时按规则跳过或失败 |
+| 层   | 现查命令                     | 说明                                                                                         |
+| ---- | ---------------------------- | -------------------------------------------------------------------------------------------- |
+| 单元 | `npm test`                   | 纯函数内核、策略、Oracle、状态哈希、续跑判定、预算、探索指标、报告 v2、录制与对比            |
+| 契约 | `npm run test:contract`      | 治理（内存 + HTTP 状态白名单）+ chess / othello 适配器；真实实现显式标不适用                 |
+| 进程 | `npm run test:integration:*` | 崩溃续跑、缺陷回放、模型预算、游戏链路、tongshi duel、aiwarden；依赖不可达按 gate 跳过或失败 |
+
+数量不写死，以命令输出为准；依赖真实服务的用例在未启动时必须显式跳过或失败，不能伪装通过。
 
 ### 集成测试：跳过 vs 失败
 
@@ -429,15 +457,21 @@ $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm ru
 - 驱动层：GameDriver + othello / chess-arena 双适配器 + LLM 策略（带显式降级）+ 通用 / 游戏特异 Oracle
 - 治理层：真实 aiwarden HTTP 客户端 + 按 session 查询 usage（不可达/查不到时**显式降级或标 unavailable**）
 - 续跑：检查点 + pending 意图 + `projectAfter` 状态哈希 + CLI `--resume`；进程级测试覆盖
-- 报告：每步 traceId / LLM tokens / 治理 tokens / 来源；成本不合成真假不分的 total
-- 扫描：`npm run scan` 多 seed 汇总，发现项标注「待人工复核」
+- 报告：v2 保存公开初局、完整动作、前后状态与分源用量；不同单位不做跨口径合计
+- 缺陷复现：`npm run demo` 实跑通过——预置漏翻被发现、新进程新房间复现同一违规，
+  健康实现执行同前缀后目标违规消失；全流程无密钥、不调用模型
+- 模型预算：预扣与 in-flight 持久化；CLI 进程被终止后恢复不退款、不重发
+- 扫描：`npm run scan` 输出可追溯报告与成对可比窗口；发现项标注「待人工复核」
 - 真实链路补跑（2026-11-05）：真实模型 5 步 0 降级、aiwarden 契约+usage 7 通过 + 3 不适用、aiwarden 续跑 30 步 `replayed 1`
 - 测试：单元 131 / 契约 23 / 集成 21；`lint` / `format:check` / `typecheck` / `build` 全绿
 - CI：上一轮 `41801302392` 全绿（2026-11-04 代码）；**本轮改动尚未推送**，
   推送后需重跑 `verify` / `e2e` / 三个 integration job 确认
 
-待做（路线图后续项）：场景级预算熔断、MCP 通道、报告跨场景基线 diff、
-**真实模型 60 步整局实跑**（当前只跑了 5 步）。
+- 真实模型对照小样本（2026-11-06）：2 seeds × 10 步，两对同窗口可比、0 降级；
+  seed 2 的探索策略在第 5 步触达角点，基线未触达；每局 10 步约 1.7 万已知 tokens
+- 该样本只证明对照链路与指标可用，**不足以宣称普遍优势**；预算硬上限内完成
+
+待做（路线图后续项）：MCP 通道、**真实模型 60 步整局实跑**（历史上只跑了 5 步）。
 
 ---
 
