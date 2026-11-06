@@ -182,7 +182,7 @@ export class ChessArenaAdapter implements GameAdapter {
       });
 
       if (!res.ok || !res.move || !res.fen || !res.turn) {
-        return { ok: false, error: res.error ?? "走子被拒绝" };
+        return { ok: false, error: "走子被拒绝或响应不完整" };
       }
 
       const moves = this.readMoves(params.state).concat(res.move.san);
@@ -203,15 +203,13 @@ export class ChessArenaAdapter implements GameAdapter {
           at: Date.now(),
         },
       };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    } catch {
+      return { ok: false, error: "chess 动作失败（网络、拒绝或响应无效）" };
     }
   }
 
   isTerminal(params: { readonly state: GameState }): boolean {
-    const state = params.state;
-    if (state.status === "finished") return true;
-    return state.turn !== null && state.legalActions.length === 0;
+    return params.state.status === "finished";
   }
 
   /**
@@ -371,7 +369,19 @@ export class ChessArenaAdapter implements GameAdapter {
   }
 
   private parseToken(token: string): { code: string; whiteId: string; blackId: string } {
-    return JSON.parse(token) as { code: string; whiteId: string; blackId: string };
+    try {
+      const parsed = JSON.parse(token) as { code: string; whiteId: string; blackId: string };
+      if (
+        !parsed ||
+        typeof parsed.code !== "string" ||
+        typeof parsed.whiteId !== "string" ||
+        typeof parsed.blackId !== "string"
+      )
+        throw new Error();
+      return parsed;
+    } catch {
+      throw new Error("chess 凭证格式无效");
+    }
   }
 
   /** 走子请求：遇到 429 等待一个窗口后重试一次。 */
@@ -403,12 +413,12 @@ export class ChessArenaAdapter implements GameAdapter {
       });
       const text = await res.text();
       if (!res.ok) {
-        throw new HttpError(
-          res.status,
-          `${method} ${path} → HTTP ${res.status} ${text.slice(0, 120)}`,
-        );
+        throw new HttpError(res.status, `chess HTTP ${res.status}`);
       }
       return text ? (JSON.parse(text) as T) : ({} as T);
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      throw new Error("chess 请求失败（网络或响应无效）");
     } finally {
       clearTimeout(timer);
     }

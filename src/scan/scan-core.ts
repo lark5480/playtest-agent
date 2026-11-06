@@ -1,183 +1,178 @@
-/**
- * 扫描汇总（纯函数）
- *
- * 只汇总**观测到的事实**：seed / 状态 / 步数 / finding code / 降级与重放计数。
- * 不在这里给"游戏有没有缺陷"下结论 —— 扫描发现需要人工复核 Oracle 误报。
- */
-
-import { buildReportJson } from "../core/report-core.js";
-import type { Finding, ReportStatus } from "../core/report-core.js";
-import type { DriveResult } from "../driver/game-driver.js";
+import { snapshotHash } from "../core/recording.js";
+import type { ReportJson, ReportStatus } from "../core/report-core.js";
+import type { ExplorationMetrics } from "../types/game.js";
 
 export interface ScanRun {
   readonly seed: number;
-  readonly status: ReportStatus;
-  readonly steps: number;
-  readonly degradedSteps: number;
-  readonly replayedSteps: number;
-  readonly findings: readonly (Finding & { readonly seed: number })[];
-  readonly error?: string;
+  readonly strategy: string;
+  readonly status: ReportStatus | "not-run";
+  readonly exitCode: number;
+  readonly reason?: string;
+  readonly report?: ReportJson;
+  readonly reportFile?: string;
+  readonly metrics?: ExplorationMetrics;
 }
 
-export interface ScanSummary {
+interface ScanOptions {
   readonly scenario: string;
   readonly game: string;
   readonly seedFrom: number;
   readonly seedTo: number;
   readonly maxSteps: number;
-  readonly coverage: string;
   readonly startedAt: number;
   readonly finishedAt: number;
   readonly runs: readonly ScanRun[];
-  readonly totals: {
-    readonly runs: number;
-    readonly passed: number;
-    readonly failed: number;
-    readonly incomplete: number;
-    readonly steps: number;
-    readonly findings: number;
-  };
-  readonly byCode: Readonly<Record<string, number>>;
+  readonly comparing: boolean;
 }
 
-export function summarizeResult(seed: number, result: DriveResult): ScanRun {
-  const report = buildReportJson({
-    scenario: result.scenario,
-    session: result.session,
-    businessKey: result.businessKey,
-    seed: result.seed,
-    startedAt: result.startedAt,
-    finishedAt: result.finishedAt,
-    steps: result.steps,
-    findings: result.findings,
-    governanceSource: "in-memory",
-  });
-
-  return {
-    seed,
-    status: report.status,
-    steps: report.stepCount,
-    degradedSteps: report.degradedSteps,
-    replayedSteps: report.replayedSteps,
-    findings: result.findings.map((finding) => ({ ...finding, seed })),
-  };
-}
-
-export function summarizeError(seed: number, error: unknown): ScanRun {
-  return {
-    seed,
-    status: "incomplete",
-    steps: 0,
-    degradedSteps: 0,
-    replayedSteps: 0,
-    findings: [],
-    error: error instanceof Error ? error.message : String(error),
-  };
-}
-
-export function summarizeRuns(params: {
-  readonly scenario: string;
-  readonly game: string;
-  readonly seedFrom: number;
-  readonly seedTo: number;
-  readonly maxSteps: number;
-  readonly coverage: string;
-  readonly startedAt: number;
-  readonly finishedAt: number;
-  readonly runs: readonly ScanRun[];
-}): ScanSummary {
-  const byCode: Record<string, number> = {};
-  let steps = 0;
-  let findings = 0;
-  let passed = 0;
-  let failed = 0;
-  let incomplete = 0;
-
-  for (const run of params.runs) {
-    steps += run.steps;
-    findings += run.findings.length;
-    if (run.status === "passed") passed += 1;
-    else if (run.status === "failed") failed += 1;
-    else incomplete += 1;
-    for (const finding of run.findings) {
-      byCode[finding.code] = (byCode[finding.code] ?? 0) + 1;
+function pairOf(seed: number, runs: readonly ScanRun[]) {
+  const baseline = runs.find((run) => run.seed === seed && run.strategy === "heuristic");
+  const ai = runs.find((run) => run.seed === seed && run.strategy === "llm-explore");
+  const left = baseline?.report;
+  const right = ai?.report;
+  const reasons: string[] = [];
+  if (!left || !right) reasons.push("配对报告未到齐");
+  if (left && right) {
+    if (snapshotHash(left.initialState) !== snapshotHash(right.initialState))
+      reasons.push("初始局面不同");
+    if (
+      left.metadata.target !== right.metadata.target ||
+      left.metadata.maxSteps !== right.metadata.maxSteps
+    )
+      reasons.push("目标或步限不同");
+    if (
+      left.metadata.agentVersion !== right.metadata.agentVersion ||
+      left.metadata.targetVersion !== right.metadata.targetVersion
+    )
+      reasons.push("运行版本不同");
+    if (right.degradedSteps > 0) reasons.push("模型发生降级，不能当作完整AI样本");
+    for (const report of [left, right]) {
+      if (
+        [
+          "budget-limit",
+          "execution-failed",
+          "state-diverged",
+          "stalled",
+          "strategy-stopped",
+        ].includes(report.stopReason)
+      )
+        reasons.push("运行提前中止");
     }
   }
-
   return {
-    scenario: params.scenario,
-    game: params.game,
-    seedFrom: params.seedFrom,
-    seedTo: params.seedTo,
-    maxSteps: params.maxSteps,
-    coverage: params.coverage,
-    startedAt: params.startedAt,
-    finishedAt: params.finishedAt,
-    runs: params.runs,
-    totals: {
-      runs: params.runs.length,
-      passed,
-      failed,
-      incomplete,
-      steps,
-      findings,
-    },
-    byCode,
+    seed,
+    comparable: reasons.length === 0,
+    reasons: [...new Set(reasons)],
+    ...(reasons.length === 0 && baseline?.metrics && ai?.metrics
+      ? {
+          uniqueStateDelta: ai.metrics.uniqueStates - baseline.metrics.uniqueStates,
+          baselineEvents: baseline.metrics.events,
+          aiEvents: ai.metrics.events,
+          baselineReport: baseline.reportFile,
+          aiReport: ai.reportFile,
+        }
+      : {}),
+    note: "只比较指定窗口内的观测事实；未知服务版本与模型非确定性不支持因果或优胜结论",
   };
+}
+
+export function summarizeRuns(options: ScanOptions) {
+  const exitCode =
+    [6, 1, 5, 4].find((code) => options.runs.some((run) => run.exitCode === code)) ?? 0;
+  const runs = options.runs.map((run) => ({
+    seed: run.seed,
+    strategy: run.strategy,
+    status: run.status,
+    exitCode: run.exitCode,
+    ...(run.reason ? { reason: run.reason } : {}),
+    ...(run.reportFile ? { reportFile: run.reportFile } : {}),
+    ...(run.metrics ? { metrics: run.metrics } : {}),
+    ...(run.report
+      ? {
+          stopReason: run.report.stopReason,
+          steps: run.report.stepCount,
+          degradedSteps: run.report.degradedSteps,
+          elapsedMs: run.report.finishedAt - run.report.startedAt,
+          findings: run.report.findings.map((finding) => ({
+            code: finding.code,
+            stepNo: finding.stepNo,
+            severity: finding.severity,
+          })),
+          firstFindingStep:
+            run.report.findings.find((finding) => finding.severity === "fatal")?.stepNo ?? null,
+          modelCalls: run.report.budget?.attempts.length ?? 0,
+          knownModelTokens: run.report.budget
+            ? run.report.budget.attempts.reduce((sum, attempt) => sum + (attempt.tokens ?? 0), 0)
+            : run.report.usage.llm,
+          unknownModelCalls:
+            run.report.budget?.attempts.filter((attempt) => attempt.state !== "settled").length ??
+            0,
+        }
+      : {}),
+  }));
+  return {
+    kind: "playtest-scan",
+    schemaVersion: 2,
+    scenario: options.scenario,
+    game: options.game,
+    seedFrom: options.seedFrom,
+    seedTo: options.seedTo,
+    maxSteps: options.maxSteps,
+    startedAt: options.startedAt,
+    finishedAt: options.finishedAt,
+    exitCode,
+    runs,
+    pairs: options.comparing
+      ? [...new Set(options.runs.map((run) => run.seed))].map((seed) => pairOf(seed, options.runs))
+      : [],
+    totals: {
+      runs: runs.length,
+      passed: runs.filter((run) => run.status === "passed").length,
+      failed: runs.filter((run) => run.status === "failed").length,
+      incomplete: runs.filter((run) => run.status === "incomplete").length,
+      notRun: runs.filter((run) => run.status === "not-run").length,
+      steps: runs.reduce((sum, run) => sum + (run.steps ?? 0), 0),
+    },
+  };
+}
+
+export type ScanSummary = ReturnType<typeof summarizeRuns>;
+
+function cell(value: unknown): string {
+  return String(value ?? "不可用")
+    .replace(/\|/g, "\\|")
+    .replace(/[\r\n]/g, " ");
 }
 
 export function renderScanMarkdown(summary: ScanSummary): string {
-  const lines: string[] = [];
-  lines.push(`# Playtest 扫描 · ${summary.scenario}`);
-  lines.push("");
-  lines.push("| 项 | 值 |");
-  lines.push("|---|---|");
-  lines.push(`| 游戏 | ${summary.game} |`);
-  lines.push(`| seed 区间 | ${summary.seedFrom}–${summary.seedTo} |`);
-  lines.push(`| 每局步数上限 | ${summary.maxSteps} |`);
-  lines.push(`| 断言覆盖 | ${summary.coverage} |`);
-  lines.push(`| 运行数 | ${summary.totals.runs} |`);
-  lines.push(
-    `| passed / failed / incomplete | ${summary.totals.passed} / ${summary.totals.failed} / ${summary.totals.incomplete} |`,
-  );
-  lines.push(`| 总步数 | ${summary.totals.steps} |`);
-  lines.push(`| 发现数 | ${summary.totals.findings} |`);
-  lines.push("");
-
-  lines.push("## 每局");
-  lines.push("");
-  lines.push("| seed | 状态 | 步数 | 发现 | 降级 | 重放 | 错误 |");
-  lines.push("|---|---|---|---|---|---|---|");
+  const lines = [
+    `# Playtest 扫描 · ${summary.scenario}`,
+    "",
+    `seed ${summary.seedFrom}–${summary.seedTo}；每局上限 ${summary.maxSteps} 步。`,
+    "",
+    `完成 ${summary.totals.passed} / 断言失败 ${summary.totals.failed} / 未完整 ${summary.totals.incomplete} / 未运行 ${summary.totals.notRun}`,
+    "",
+    "| seed | 策略 | 结果/停止原因 | 唯一局面 | 首次违规 | 模型调用 | 已知 tokens | 未知调用 | 证据 |",
+    "|---|---|---|---|---|---|---|---|---|",
+  ];
   for (const run of summary.runs) {
     lines.push(
-      `| ${run.seed} | ${run.status} | ${run.steps} | ${run.findings.length} | ` +
-        `${run.degradedSteps} | ${run.replayedSteps} | ${run.error ?? "-"} |`,
+      `| ${run.seed} | ${cell(run.strategy)} | ${cell(run.stopReason ?? run.reason ?? run.status)} | ${cell(run.metrics?.uniqueStates)} | ${cell(run.firstFindingStep)} | ${cell(run.modelCalls)} | ${cell(run.knownModelTokens)} | ${cell(run.unknownModelCalls)} | ${cell(run.reportFile)} |`,
     );
   }
-  lines.push("");
-
-  lines.push("## 发现");
-  lines.push("");
-  if (summary.totals.findings === 0) {
-    lines.push("无。");
-  } else {
-    lines.push("| seed | 编号 | 级别 | 步骤 | 描述 |");
-    lines.push("|---|---|---|---|---|");
-    for (const run of summary.runs) {
-      for (const finding of run.findings) {
-        lines.push(
-          `| ${run.seed} | ${finding.code} | ${finding.severity} | ${finding.stepNo ?? "-"} | ${finding.message} |`,
-        );
-      }
+  if (summary.pairs.length > 0) {
+    lines.push("", "## 成对对照", "");
+    for (const pair of summary.pairs) {
+      lines.push(
+        `- seed ${pair.seed}：${pair.comparable ? `同条件窗口，AI唯一局面数差 ${pair.uniqueStateDelta ?? "不可用"}` : `不可比：${pair.reasons.join("；")}`}。`,
+      );
     }
   }
-  lines.push("");
-
-  lines.push("## 说明");
-  lines.push("");
-  lines.push("- 扫描发现需要人工复核：先排除 Oracle 误报，再记为游戏缺陷。");
-  lines.push("- 本报告只汇总观测事实；「未发现」不等于「游戏无缺陷」，需结合覆盖边界阅读。");
-  lines.push("");
-
+  lines.push(
+    "",
+    "断言清单不是实测覆盖率；未发现不等于无缺陷，发现仍需人工排除 Oracle 误报。",
+    "未知用量不是零成本；此处不比较棋力，不预设 AI 胜出。",
+    "",
+  );
   return lines.join("\n");
 }

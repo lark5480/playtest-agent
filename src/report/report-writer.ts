@@ -5,7 +5,9 @@
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
+
+import { parseReportJson } from "../core/recording.js";
 
 import { renderReportMarkdown } from "../core/report-core.js";
 import type { ReportJson } from "../core/report-core.js";
@@ -28,15 +30,26 @@ export function writeReport(
   report: ReportJson,
   options: { readonly dir?: string; readonly baseName?: string } = {},
 ): ReportPaths {
+  const safe = parseReportJson(report);
+  const markdown = renderReportMarkdown(safe);
+  const html = renderReportHtml(safe);
   const dir = resolve(options.dir ?? defaultReportsDir());
+  const name = options.baseName ?? defaultBaseName(safe.scenario, safe.finishedAt);
+  if (
+    !name ||
+    basename(name) !== name ||
+    /[\\/:*?"<>|]/u.test(name) ||
+    [...name].some((char) => char.charCodeAt(0) < 32) ||
+    name === "." ||
+    name === ".."
+  ) {
+    throw new Error("报告文件名必须是目录内的普通文件名");
+  }
+  const base = resolve(dir, name);
   mkdirSync(dir, { recursive: true });
-  const base = resolve(
-    dir,
-    options.baseName ?? defaultBaseName(report.scenario, report.finishedAt),
-  );
-  writeFileSync(`${base}.md`, renderReportMarkdown(report), "utf8");
-  writeFileSync(`${base}.json`, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  writeFileSync(`${base}.html`, renderReportHtml(report), "utf8");
+  writeFileSync(`${base}.md`, markdown, "utf8");
+  writeFileSync(`${base}.json`, `${JSON.stringify(safe, null, 2)}\n`, "utf8");
+  writeFileSync(`${base}.html`, html, "utf8");
   return { md: `${base}.md`, json: `${base}.json`, html: `${base}.html` };
 }
 
@@ -56,5 +69,6 @@ export function writeTextPair(params: {
 
 export function defaultBaseName(prefix: string, at: number): string {
   const stamp = new Date(at).toISOString().replace(/[:.]/g, "-");
-  return `${prefix}-${stamp}`;
+  const safePrefix = prefix.replace(/[^\p{L}\p{N}_.-]/gu, "_").slice(0, 100) || "report";
+  return `${safePrefix}-${stamp}`;
 }

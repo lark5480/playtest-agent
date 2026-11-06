@@ -106,6 +106,14 @@ export class AiwardenHttpClient implements GovernanceClient {
       },
     );
 
+    // 成功白名单必须先于 replayed；失败终态重放不是执行许可。
+    if (!res || res.status !== "SUCCEEDED") {
+      throw new Error("治理未确认成功，禁止执行游戏动作");
+    }
+    if (typeof res.replayed !== "boolean") {
+      throw new Error("治理响应缺少有效重放标记，禁止执行游戏动作");
+    }
+
     if (res.replayed) {
       // 命中终态：未重复执行 → 副作用**不得**再发生
       return {
@@ -115,10 +123,6 @@ export class AiwardenHttpClient implements GovernanceClient {
         tokenSource: "unavailable",
         tokensUnavailableReason: "单次工具调用响应不含成本，需按 session 查询用量",
       };
-    }
-
-    if (res.status === "PENDING_APPROVAL" || res.status === "REJECTED") {
-      throw new Error(`治理拒绝工具调用：status=${res.status} ${res.error ?? ""}`);
     }
 
     await params.perform();
@@ -165,13 +169,11 @@ export class AiwardenHttpClient implements GovernanceClient {
         if (rows.length > 0 && byStep.length === 0) {
           lastReason = "aiwarden usage 记录缺少 stepNo，无法按步骤归因";
         }
-      } catch (error) {
+      } catch {
         return {
           source: "unavailable",
           byStep: [],
-          unavailableReason: `aiwarden usage 查询失败：${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          unavailableReason: "aiwarden usage 查询失败（网络或响应无效）",
         };
       }
 
@@ -244,7 +246,7 @@ export class AiwardenHttpClient implements GovernanceClient {
     });
     const text = await res.text();
     if (!res.ok) {
-      throw new Error(`GET ${path} → HTTP ${res.status} ${text.slice(0, 200)}`);
+      throw new Error(`aiwarden usage HTTP ${res.status}`);
     }
     const body = JSON.parse(text) as unknown;
     return Array.isArray(body) ? (body as UsageRow[]) : [];
@@ -270,9 +272,11 @@ export class AiwardenHttpClient implements GovernanceClient {
       });
       const text = await res.text();
       if (!res.ok) {
-        throw new Error(`aiwarden ${path} → HTTP ${res.status} ${text.slice(0, 200)}`);
+        throw new Error(`aiwarden HTTP ${res.status}`);
       }
       return JSON.parse(text) as T;
+    } catch {
+      throw new Error("aiwarden 请求失败（网络、HTTP 或响应无效）");
     } finally {
       clearTimeout(timer);
     }

@@ -18,14 +18,19 @@
 
 import { HeuristicStrategy } from "./heuristic.js";
 import type { Strategy } from "./strategy.js";
-import type { Decision, Observation } from "../types/game.js";
+import type { Decision, ExplorationContext, Observation } from "../types/game.js";
+import { StrategyStop } from "../types/run.js";
+import { LlmRequestError } from "../llm/request.js";
+
+export type LlmMode = "llm" | "llm-explore";
+export const EXPLORATION_PROMPT_VERSION = "exploration-v1";
 
 /**
  * 模型调用的 token 用量（来源：OpenAI 兼容响应的 `usage`）。
  */
 export interface LlmUsage {
-  readonly promptTokens: number;
-  readonly completionTokens: number;
+  readonly promptTokens?: number;
+  readonly completionTokens?: number;
   readonly totalTokens: number;
 }
 
@@ -57,6 +62,8 @@ export interface LlmClient {
       readonly payload: Readonly<Record<string, unknown>>;
     }[];
     readonly prompt: string;
+    /** 实现须响应取消，并将信号传递给真实 HTTP 请求。 */
+    readonly signal?: AbortSignal;
   }): Promise<LlmPickResult>;
 }
 
@@ -64,7 +71,7 @@ export interface LlmClient {
  * LLM 策略。
  */
 export class LlmStrategy implements Strategy {
-  readonly name = "llm";
+  readonly name: LlmMode;
 
   /** 降级用的确定性基线。 */
   private readonly fallback = new HeuristicStrategy();
@@ -72,13 +79,20 @@ export class LlmStrategy implements Strategy {
   public constructor(
     private readonly client: LlmClient | null,
     private readonly timeoutMs = 60_000,
-  ) {}
+    mode: LlmMode = "llm",
+  ) {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+      throw new Error("模型超时须为正整数毫秒");
+    }
+    this.name = mode;
+  }
 
   async decide(params: {
     readonly observation: Observation;
     readonly seed: number;
+    readonly exploration?: ExplorationContext;
   }): Promise<Decision> {
-    const { observation, seed } = params;
+    const { observation, seed, exploration } = params;
     const actions = observation.state.legalActions;
 
     // 无合法动作 → 终局，与模型是否可用无关（不标降级：那不是降级，是正常结束）
@@ -96,13 +110,18 @@ export class LlmStrategy implements Strategy {
       };
     }
 
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new DOMException("模型调用超时", "TimeoutError")),
+      this.timeoutMs,
+    );
     try {
-      const result = await this.withTimeout(
-        this.client.pickAction({
-          actions: actions.map((a) => ({ id: a.id, payload: a.payload })),
-          prompt: this.buildPrompt(observation),
-        }),
-      );
+      // 等客户端完成取消和预算结算，不在账目持久化之前返回动作。
+      const result = await this.client.pickAction({
+        actions: actions.map((a) => ({ id: a.id, payload: a.payload })),
+        prompt: this.buildPrompt(observation, exploration),
+        signal: controller.signal,
+      });
       const chosen = actions.find((a) => a.id === result.actionId);
       if (!chosen) {
         // 模型给了非法动作 → 降级（不静默）
@@ -110,7 +129,7 @@ export class LlmStrategy implements Strategy {
         return {
           ...base,
           degraded: true,
-          degradedReason: `模型返回的动作 "${result.actionId ?? "null"}" 不在合法动作集内，已降级到确定性基线`,
+          degradedReason: "模型未返回合法动作，已降级到确定性基线",
           ...(result.usage ? { llmTokens: result.usage.totalTokens } : {}),
           model: this.client.name,
         };
@@ -123,12 +142,20 @@ export class LlmStrategy implements Strategy {
         model: this.client.name,
       };
     } catch (error) {
+      if (error instanceof StrategyStop) throw error;
       const base = await this.fallback.decide({ observation, seed });
       return {
         ...base,
         degraded: true,
-        degradedReason: `模型调用失败：${error instanceof Error ? error.message : String(error)}`,
+        degradedReason: controller.signal.aborted
+          ? "模型调用超时"
+          : error instanceof LlmRequestError
+            ? error.message
+            : "模型调用失败",
+        model: this.client.name,
       };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -138,14 +165,26 @@ export class LlmStrategy implements Strategy {
    * 只给**合法动作**，不让模型臆造。棋盘/局面用可读格式，避免 reasoning 模型
    * 在截断的 JSON 上"分析棋理"把 token 烧完却不给最终 id。
    */
-  private buildPrompt(observation: Observation): string {
+  private buildPrompt(observation: Observation, exploration?: ExplorationContext): string {
     const list = observation.state.legalActions
       .map((a) => `- ${a.id} -> ${JSON.stringify(a.payload)}`)
       .join("\n");
     return [
       "你是一个游戏自动测试 Agent 的决策器。",
       "任务：只从下面的合法动作里选一个。",
-      "要求：不要分析棋理；不要输出解释；最终只输出一个 id。",
+      ...(this.name === "llm-explore"
+        ? [
+            `探索提示版本：${EXPLORATION_PROMPT_VERSION}`,
+            `测试目标：${exploration?.target ?? "触达未覆盖的规则事件和局面"}`,
+            `已覆盖事件：${JSON.stringify(exploration?.events ?? {})}`,
+            `局面访问摘要：${JSON.stringify(exploration?.visited ?? { uniqueStates: 0, recent: [] })}`,
+            `最近反馈：${JSON.stringify(exploration?.recent ?? [])}`,
+            "优先探索目标机制、未覆盖事件和未访问局面；反馈仅为观察证据。",
+          ]
+        : []),
+      "测试是否通过只能由独立 Oracle 裁决，禁止自行给出 pass/fail 结论。",
+      "跳过回合仅当合法动作集显式提供该动作时可选，不得自造 pass。",
+      "要求：不要输出分析或解释；最终只输出一个 id。",
       "",
       `当前执子方：${observation.state.turn ?? "无"}`,
       formatState(observation.state.payload),
@@ -155,24 +194,6 @@ export class LlmStrategy implements Strategy {
       "",
       "只返回一个 id（例如 2,3），不要返回其他文字。",
     ].join("\n");
-  }
-
-  /** 给模型调用加超时（超时即降级）。 */
-  private async withTimeout<T>(promise: Promise<T>): Promise<T> {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      return await Promise.race([
-        promise,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`模型调用超时（${this.timeoutMs}ms）`)),
-            this.timeoutMs,
-          );
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
   }
 }
 
@@ -193,5 +214,6 @@ function formatState(payload: Readonly<Record<string, unknown>>): string {
     return ["棋盘（0=空，1=黑，2=白；列从左到右 0..7）：", ...rows].join("\n");
   }
 
-  return `局面：${JSON.stringify(payload).slice(0, 800)}`;
+  // 不把未知 payload（可能包含凭证）直接放进模型提示。
+  return "局面：见合法动作集";
 }

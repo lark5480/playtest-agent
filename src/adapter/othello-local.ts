@@ -57,11 +57,12 @@ export interface OthelloLocalOptions {
 
 export class OthelloLocalAdapter implements GameAdapter {
   readonly name = "othello-local";
+  readonly supportsConditionalAct = true;
 
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
-  /** 按房间号缓存服务端最新版本戳；只用于乐观并发，不外泄到状态 payload。 */
-  private readonly updatedAtByRoom = new Map<string, number>();
+  /** 版本戳绑定观察对象，后来的 observe 不得给旧局面升级 CAS 版本。 */
+  private readonly updatedAtByState = new WeakMap<GameState, number>();
 
   public constructor(options: OthelloLocalOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "http://localhost:5173").replace(/\/+$/, "");
@@ -153,13 +154,13 @@ export class OthelloLocalAdapter implements GameAdapter {
     const turn = params.state.turn === "black" ? blackId : whiteId;
     const row = Number(params.action.payload["row"]);
     const col = Number(params.action.payload["col"]);
-    const expectedUpdatedAt = this.updatedAtByRoom.get(roomId);
+    const expectedUpdatedAt = this.updatedAtByState.get(params.state);
     if (typeof expectedUpdatedAt !== "number") {
       // 不静默跳过并发校验：othello 服务端的 expectedUpdatedAt 是可选的，
       // 缺省时过期局面会被直接接受。缓存缺失说明调用方绕过了
       // open / resume / observe，此时继续落子等于假装并发保护仍然有效。
       throw new Error(
-        `othello 适配器缺少房间 ${roomId} 的版本戳缓存：` +
+        "othello 适配器缺少局面的版本戳缓存：" +
           "act 前必须先 open / resume / observe 取得最新局面，否则无法发送 expectedUpdatedAt，服务端会跳过并发校验。",
       );
     }
@@ -184,17 +185,13 @@ export class OthelloLocalAdapter implements GameAdapter {
           at: Date.now(),
         },
       };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    } catch {
+      return { ok: false, error: "othello 动作失败（网络、拒绝或响应无效）" };
     }
   }
 
   isTerminal(params: { state: GameState }): boolean {
-    const s = params.state;
-    if (s.status === "finished") return true;
-    // 对方无子可下时会"跳过"并保持当前回合 —— 此时仍有合法动作，不是终局。
-    // 只有当前方也无处可下才是终局。
-    return s.turn !== null && s.legalActions.length === 0;
+    return params.state.status === "finished";
   }
 
   /**
@@ -268,10 +265,8 @@ export class OthelloLocalAdapter implements GameAdapter {
 
   /** 把服务端公开状态转成 Agent 的 GameState。 */
   private toGameState(publicState: PublicState): GameState {
-    // 服务端版本戳按房间私有缓存，供下一次 act 的乐观并发校验使用。
-    this.updatedAtByRoom.set(publicState.roomId, publicState.updatedAt);
     const legalActions = this.computeLegalActions(publicState.board, publicState.currentTurn);
-    return {
+    const state: GameState = {
       id: publicState.roomId,
       status: publicState.status,
       turn: publicState.status === "finished" ? null : publicState.currentTurn,
@@ -283,6 +278,8 @@ export class OthelloLocalAdapter implements GameAdapter {
         seq: Number(publicState.moveCount),
       },
     };
+    this.updatedAtByState.set(state, publicState.updatedAt);
+    return state;
   }
 
   /**
@@ -344,8 +341,19 @@ export class OthelloLocalAdapter implements GameAdapter {
   }
 
   private parseToken(token: string): { roomId: string; blackId: string; whiteId: string } {
-    const parsed = JSON.parse(token) as { roomId: string; blackId: string; whiteId: string };
-    return parsed;
+    try {
+      const parsed = JSON.parse(token) as { roomId: string; blackId: string; whiteId: string };
+      if (
+        !parsed ||
+        typeof parsed.roomId !== "string" ||
+        typeof parsed.blackId !== "string" ||
+        typeof parsed.whiteId !== "string"
+      )
+        throw new Error();
+      return parsed;
+    } catch {
+      throw new Error("othello 凭证格式无效");
+    }
   }
 
   /**
@@ -389,9 +397,11 @@ export class OthelloLocalAdapter implements GameAdapter {
       });
       const text = await res.text();
       if (!res.ok) {
-        throw new Error(`${method} ${path} → HTTP ${res.status} ${text.slice(0, 120)}`);
+        throw new Error(`othello HTTP ${res.status}`);
       }
       return text ? (JSON.parse(text) as T) : ({} as T);
+    } catch {
+      throw new Error("othello 请求失败（网络、HTTP 或响应无效）");
     } finally {
       clearTimeout(timer);
     }
