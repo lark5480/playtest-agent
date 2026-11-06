@@ -47,8 +47,9 @@ types  ←  core  ←  adapter / strategy / oracle / governance
 
 ### 1.1 冻结后的扩展记录
 
-冻结契约**只增不改**：新增字段是允许的（向后兼容），改既有字段语义不允许。
-以下为冻结后新增的字段，均为**可选**（不传时行为与冻结时一致）：
+契约变更先写裁决：兼容字段可扩展，语义变化须显式升版，不永久冻结错误语义。
+裁决 30–34 将报告与模型预算检查点升级为 v2；旧数据不补造，幂等摘要算法保持不变。
+以下是 v1 时期的兼容扩展记录，不代表 v2 字段均为可选：
 
 | 契约 | 新增项                                                                          | 何时加的   | 为什么                                                               |
 | ---- | ------------------------------------------------------------------------------- | ---------- | -------------------------------------------------------------------- |
@@ -59,7 +60,7 @@ types  ←  core  ←  adapter / strategy / oracle / governance
 | ⑧    | `steps[].degradedReason`                                                        | Stage 5    | 承诺 C4 要求降级**可追溯** —— 只标 `degraded: true` 说不清为什么降级 |
 | ⑧    | `governanceSource`                                                              | Stage 5    | 区分"真实 aiwarden 链路"与"内存替身降级"，否则报告无法自证证据等级   |
 | ⑧    | `governanceDegradedReason`                                                      | Stage 5    | 同上，写明降级原因                                                   |
-| ⑧    | `steps[].traceId` / `llmTokens` / `governanceTokens` / `tokenSources` / `usage` | 2026-11-05 | 报告必须能自证治理证据；只增可选字段，`schemaVersion` 仍为 1         |
+| ⑧    | `steps[].traceId` / `llmTokens` / `governanceTokens` / `tokenSources` / `usage` | 2026-11-05 | v1 时点的兼容扩展；v2 已按裁决 30 升版，见 §4.1                      |
 | ④    | `GameAdapter.resume?`（可选）                                                   | Stage 4    | 续跑需要"从凭证恢复对局"；不实现该方法的适配器照常工作               |
 
 > 报告落盘同时生成 `.md` / `.json` / `.html` 三份；`.html` 是**派生的本地预览**
@@ -138,6 +139,25 @@ isTerminal(state) = state.status === "finished"
 这条约束是 Oracle 能抓到"策略越界"类缺陷的前提。
 
 ---
+
+## 4.1 报告 v2、停止原因与复现（裁决 30–34）
+
+```
+stopReason = game-finished | step-limit | budget-limit | assertion-failed
+           | execution-failed | strategy-stopped | stalled | recording-exhausted
+           | state-diverged
+```
+
+- `gameTerminal` 只表示游戏规则终局；`status: passed` 还要求正常终局、无错误类别、
+  步骤证据完整且 Oracle 已实际检查。warning 不掩盖截断或失败。
+- 报告 v2 保存公开初局/末局、逐步完整动作与前后状态、三个独立摘要口径：
+  续跑身份、完整语义回放、探索去重。公开快照按游戏白名单投影，凭证只留在
+  `reports/checkpoints/`。
+- `replay` 使用录制动作重新开局，不调用模型；首次分歧即停并保留已验证前缀。
+  健康对照的 `not-reproduced` 只描述原首错前缀，不宣称整局修复。
+- 模型预算请求前预扣并持久化；硬限制调用次数，已知 usage 仅为软 token 停止线，
+  未知用量阻止后续付费调用；恢复不退还在途额度。治理许可与游戏副作用分别取证，
+  只有明确 SUCCEEDED 才允许执行。
 
 ## 5. 已知边界
 
