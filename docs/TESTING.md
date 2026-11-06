@@ -140,15 +140,15 @@ npm run scan -- --scenario smoke --seeds=1-50 --max-steps=60
 - **真实缺陷**：按裁决 18，不强制要求发现缺陷；若扫描为零，必须如实记录
   seed 区间、步数、断言覆盖与产物路径；若扫描有发现，先排除 Oracle 误报
   再记为游戏缺陷，**不伪造、不夸大**；
-- CI 全绿：`verify`（含进程级续跑）与真实链路各 job 全部通过；
+- CI 全绿：`verify`（含进程级续跑 / 缺陷回放 / 预算）与真实链路各 job 全部通过；
   aiwarden 集成在未配置外部地址时按设计 Skipped
   （job 清单见 README 的「CI 侧相关 job」表，不在此重复维护）。
 
 ### e2e-tongshi 的启动约定
 
-`e2e-tongshi` job 先起 3100 的 `next start`，再显式 `CI: ""` 让 Playwright
-复用该实例（`playwright.config.ts` 的 `reuseExistingServer: !process.env.CI`），
-**不另起 dev server 撞端口**。这一步与 ci.yml 的实际写法保持一致。
+`e2e-tongshi` job **不得预启动 3100 服务**：测试服务由 tongshi-ju 的 Playwright `webServer` 自己起，
+并跑干净构建（不设 `CI: ""` 之类的绕过）。我们的 job 必须与 tongshi-ju 自身 CI 同形：
+`NEXT_DIST_DIR: .next-e2e` → `npm run build` → `npx playwright test`。
 上游若变更 `E2E_PORT` / `NEXT_DIST_DIR` 等约定，我们跟随对齐，**不在 agent 侧放宽断言或跳过 job**
 （背景：上游 `01b8c96` 在配置加载阶段检查端口，占用即 `exit(1)`）。
 

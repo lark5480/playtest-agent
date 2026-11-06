@@ -65,16 +65,24 @@ API Key **只从服务端环境变量读取**，不进 bundle、不入日志、�
 ```
 src/
 ├─ types/       共享类型（地基冻结契约 ①②）
-├─ core/        纯函数内核（③④⑧）：指纹 / PRNG / 驱动骨架 / 报告渲染
-├─ adapter/     适配器 SPI + 契约测试套件（④）
-├─ strategy/    策略 SPI + 确定性基线（⑤）
+├─ core/        纯函数内核（③④⑧）：指纹 / PRNG / 驱动骨架 / 报告渲染 / 录制对比
+├─ driver/      驱动循环 + 检查点 v2 + 终止判定
+├─ adapter/     适配器 SPI + 契约测试套件（④）；othello / chess 适配器与 HTTP 错误分类
+├─ strategy/    策略 SPI + 确定性基线（⑤）+ LLM 策略
+├─ llm/         OpenAI 兼容客户端、请求协议与预算包装
 ├─ oracle/      断言 SPI + 通用断言集（⑥）
-├─ governance/  治理契约 + 幂等键装配 + 内存替身（⑦）
-└─ report/      报告落盘薄壳
+├─ governance/  治理契约 + 幂等键装配 + 内存替身 + aiwarden HTTP 客户端（⑦）
+├─ replay/      缺陷回放：按录制动作重开，不重新调用模型
+├─ scan/        多 seed 扫描与聚合
+├─ report/      报告落盘 / 自包含 HTML / 报告 diff
+├─ demo/        预置缺陷闭环用的本地假服务
+├─ scenarios/   内置场景注册表
+└─ cli.ts / cli-args.ts  命令入口与参数解析
 tests/
 ├─ *.test.ts        单元测试
 ├─ contract/        契约测试（适配器 / 治理实现必过）
-└─ integration/     集成测试（真实被测游戏 / 真实治理面）
+├─ integration/     集成测试（真实被测游戏 / 真实治理面）
+└─ helpers/         集成门禁与测试替身
 docs/
 ├─ PRD.md            产品需求
 ├─ ARCHITECTURE.md   地基契约权威源（8 项冻结契约）
@@ -143,8 +151,9 @@ npm run build
 
 **CI**：push / PR 到 `master` / `main` / `dev` 均触发；
 `verify`（lint / format / typecheck / 单测 / 契约 / **进程级续跑** / **缺陷回放** / **预算** / 构建）
-→ Windows 恢复 job → `e2e`（真实跑一局）
-→ `integration-games` / `integration-tongshi` / `e2e-tongshi`（强制真实服务），
+与 `windows-recovery`（Windows 上的续跑 / 回放 / 预算）先跑，随后并行执行
+`e2e`（真实跑一局）与 `integration-games` / `integration-tongshi` / `e2e-tongshi`（强制真实服务）；
+`integration-aiwarden` 仅在配置 `vars.AIWARDEN_BASE_URL` 时运行（未配置即 Skipped）。
 细节以 `.github/workflows/ci.yml` 为准。**CI 绿灯 = 可合并判据**。
 
 **提交信息**：`type: 中文描述`（`docs` / `feat` / `fix` / `test` / `chore`），
