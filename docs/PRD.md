@@ -280,19 +280,19 @@ Node.js **≥ 24.22.1**（2026-10 Node 安全公告修复线）· TypeScript 5.5
 
 ## 13. 成功标准（每条绑定命令，可复现）
 
-| #   | 标准                 | 命令                                                                                                 | 期望                                                                                                                    |
-| --- | -------------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| S1  | Agent 自动打完一局   | `npm run playtest -- --scenario smoke`                                                               | `passed`，N 步，产出报告                                                                                                |
-| S2  | 崩溃注入             | `npm run playtest -- --scenario crash --inject-crash=10 --checkpoint=reports/checkpoints/crash.json` | 退出码 3，打印检查点路径                                                                                                |
-| S3  | 崩溃续跑不重复副作用 | `npm run test:integration:resume`                                                                    | 进程级用例全绿；第 N 步 replayed、同 businessKey、无 failed                                                             |
-| S4  | 模型不可用降级       | 无 `AI_API_KEY` 时跑 smoke                                                                           | `passed`，报告「降级说明」非空                                                                                          |
-| S5  | 并发冲突被拒         | `npm run test:integration`                                                                           | 两个客户端同房间并发 → 恰好一个被接受，另一个 409                                                                       |
-| S6  | 静态检查与构建       | `npm run lint && npm run format:check && npm run typecheck && npm run build`                         | 全绿                                                                                                                    |
-| S7  | CI 全绿              | 推 PR / push dev                                                                                     | verify + e2e + integration-games + integration-tongshi + e2e-tongshi 全绿（上一轮 run 41801302392；本轮改动推送后重跑） |
-| S8  | 报告自证治理证据     | `npm run playtest -- --scenario smoke`                                                               | 报告含 `usage` / `traceId` / `llmTokens` / `governanceTokens` / `tokenSources`；缺失标 unavailable                      |
-| S9  | 多 seed 扫描         | `npm run scan -- --scenario smoke --seeds=1-50 --max-steps=60`                                       | 生成 `reports/scan-*.md/.json`；发现项标注「待人工复核」                                                                |
-| S10 | 缺陷发现与跨进程复现 | `npm run demo` / `npm run test:integration:replay`                                                   | 预置漏翻被 OTH2 检出；新进程新房间复现同一违规与证据；健康前缀只记 not-reproduced，来源标 injected-fixture              |
-| S11 | 模型预算与恢复       | `npm run test:integration:budget`                                                                    | 本地假模型请求数不超过硬上限；未知用量不填 0；进程中断恢复不退款、不重发                                                |
+| #   | 标准                 | 命令                                                                                                 | 期望                                                                                                                                                                             |
+| --- | -------------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S1  | Agent 自动打完一局   | `npm run playtest -- --scenario smoke`                                                               | `passed`，N 步，产出报告                                                                                                                                                         |
+| S2  | 崩溃注入             | `npm run playtest -- --scenario crash --inject-crash=10 --checkpoint=reports/checkpoints/crash.json` | 退出码 3，打印检查点路径                                                                                                                                                         |
+| S3  | 崩溃续跑不重复副作用 | `npm run test:integration:resume`                                                                    | 进程级用例全绿；第 N 步 replayed、同 businessKey、无 failed                                                                                                                      |
+| S4  | 模型不可用降级       | 无 `AI_API_KEY` 时跑 smoke                                                                           | `passed`，报告「降级说明」非空                                                                                                                                                   |
+| S5  | 并发冲突被拒         | `npm run test:integration`                                                                           | 两个客户端同房间并发 → 恰好一个被接受，另一个 409                                                                                                                                |
+| S6  | 静态检查与构建       | `npm run lint && npm run format:check && npm run typecheck && npm run build`                         | 全绿                                                                                                                                                                             |
+| S7  | CI 全绿              | 推 PR / push dev                                                                                     | `verify`（含进程级续跑 / 缺陷回放 / 预算）、`windows-recovery`、`e2e` 与各真实链路 job 全绿；aiwarden 集成未配置外部地址时按设计 Skipped（job 清单见 README「CI 侧相关 job」表） |
+| S8  | 报告自证治理证据     | `npm run playtest -- --scenario smoke`                                                               | 报告含 `usage` / `traceId` / `llmTokens` / `governanceTokens` / `tokenSources`；缺失标 unavailable                                                                               |
+| S9  | 多 seed 扫描         | `npm run scan -- --scenario smoke --seeds=1-50 --max-steps=60`                                       | 生成 `reports/scan-*.md/.json`；发现项标注「待人工复核」                                                                                                                         |
+| S10 | 缺陷发现与跨进程复现 | `npm run demo` / `npm run test:integration:replay`                                                   | 预置漏翻被 OTH2 检出；新进程新房间复现同一违规与证据；健康前缀只记 not-reproduced，来源标 injected-fixture                                                                       |
+| S11 | 模型预算与恢复       | `npm run test:integration:budget`                                                                    | 本地假模型请求数不超过硬上限；未知用量不填 0；进程中断恢复不退款、不重发                                                                                                         |
 
 **完成的定义**：S1–S11 全部可复现，真实输出贴进 README；CI 全绿（含 e2e 与强制的游戏 / tongshi 集成）。
 报告以 v2 输出，`passed` 只代表正常终局且检查完成；预算测试不调用付费模型。
@@ -307,9 +307,9 @@ Node.js **≥ 24.22.1**（2026-10 Node 安全公告修复线）· TypeScript 5.5
 | **Stage 0**   | 地基：8 项冻结契约 + 纯函数内核 + SPI + 契约套件                    | ✅ 完成                                                  |
 | **Stage 4**   | 驱动层：GameDriver + othello 适配器 + 策略 + Oracle + 报告 + CLI    | ✅ 完成                                                  |
 | **Stage 5**   | 治理层：真实 aiwarden 客户端 + 显式降级                             | ✅ 完成（真实链路已实跑；usage 查询用于成本归因）        |
-| **Stage 6**   | MVP 验收：命令实跑 + CI 全绿                                        | ✅ 完成（run 41801302392）                               |
+| **Stage 6**   | MVP 验收：命令实跑 + CI 全绿                                        | ✅ 完成（2026-11-04 run 41801302392）                    |
 | **Stage 1–3** | 调研 / PRD / 裁决清单                                               | ✅ 完成                                                  |
-| **后续 5**    | 真实 aiwarden 链路实跑                                              | ✅ **完成**（7 实跑 + 1 不适用；见 ARCHITECTURE §6）     |
+| **后续 5**    | 真实 aiwarden 链路实跑                                              | ✅ **完成**（7 通过 + 3 显式不适用；见 ARCHITECTURE §6） |
 | 后续 1        | 第二个被测对象（chess-arena 适配器，需一个只读接口）                | ✅ 完成（2026-11-04，本地内存房间 API）                  |
 | 后续 2        | 场景级预算熔断                                                      | ✅ 完成（请求前预扣 + 跨进程恢复；usage 为软停止线）     |
 | 后续 3        | MCP 通道                                                            | ⏳                                                       |

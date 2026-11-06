@@ -252,13 +252,12 @@ $ npm run scan -- --scenario smoke --seeds=1-50 --max-steps=60
 chess 侧 CHS12–CHS15（合法集、FEN 历史连续性、子力不足、result 口径）由单测覆盖，
 并实跑 `3 seeds / 120 步`（CHS1–CHS15 零违规）。
 
-**本地验证**
+**本地验证（2026-11-04 快照）**
 
 - 单元 **131** / 契约 **23** / 集成 **21**（othello 起来时 4 条通过；
   其余依赖未起按规则显式跳过）
 - `lint` / `format:check` / `typecheck` / `build` 全绿
-- 本轮改动尚未推送；推送后需重跑 CI
-  （上一轮 green run `41801302392` 是 2026-11-04 的代码）
+- 当轮代码对应的 CI green run 为 `41801302392`；当前规模以「测试结果」节的命令输出为准
 
 **本轮真实链路补跑（2026-11-05）**
 
@@ -317,7 +316,7 @@ curl -X PUT http://localhost:8080/api/v1/admin/budgets/1 \
 PLAYTEST_REQUIRE_INTEGRATION=0 npm run test:integration
 
 # 服务都不起 + 强制模式：除自足的进程级续跑外，依赖项全部失败；
-# 2 条真实实现不适用的契约显式跳过，退出码 1
+# 3 条真实实现不适用的契约显式跳过，退出码 1
 PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration
 
 # 起两个游戏后 + 强制模式：游戏链路 4/4 通过
@@ -333,11 +332,12 @@ CI 侧相关 job：
 
 | job                    | 内容                                                                                                                        | 超时    |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------- |
-| `verify`               | lint / format / typecheck / 单测 / 契约 / **进程级续跑** / 构建                                                             | 未设    |
+| `verify`               | lint / format / typecheck / 单测 / 契约 / **进程级续跑** / **缺陷回放** / **预算** / 构建                                   | 未设    |
+| `windows-recovery`     | Windows 上的进程级续跑 / 缺陷回放 / 预算（与 verify 并行）                                                                  | 10 分钟 |
 | `e2e`                  | 拉 othello-online → 起服 → `npm run playtest -- --scenario smoke` → 上传 `playtest-report`                                  | 未设    |
 | `integration-games`    | 拉 othello-online / chess-arena → 构建 → 5173 / 3000 起服 → `PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:games` | 10 分钟 |
 | `integration-tongshi`  | 拉 tongshi-ju → 构建 → 3100 起服 → `PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:tongshi`                        | 15 分钟 |
-| `e2e-tongshi`          | 拉 tongshi-ju → 先起 3100 `next start` → 显式 `CI:""` 让 Playwright 复用 → 跑自带套件（actor 侧不引 Playwright 依赖）       | 15 分钟 |
+| `e2e-tongshi`          | 拉 tongshi-ju → 构建 `.next-e2e` → 由其 Playwright `webServer` 起服 → 跑自带套件（actor 侧不引 Playwright 依赖）            | 15 分钟 |
 | `integration-aiwarden` | 仅当仓库变量 `AIWARDEN_BASE_URL` 配置时运行，运行即强制（契约 + usage）；不配置则不运行                                     | 5 分钟  |
 
 aiwarden 的治理链路需要 Java 21 + Maven + Docker（测试只需 PG / Redis / Kafka；MinIO 是 aiwarden 完整 compose 的一部分，治理契约用不到），但单轮约 2 分钟、叠加镜像拉取抖动，挂到每次 push 的默认流水线既不划算也不稳定，**不在默认 CI 里假装通过**：job 不配置 URL 就不运行（Actions 里显示 Skipped），配置了就必须真跑、失败即红。运行时会设 `AIWARDEN_ADMIN_USER_ID=1`，因为 `/api/v1/admin/usage` 要求数值主体。
@@ -463,9 +463,9 @@ $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm ru
 - 模型预算：预扣与 in-flight 持久化；CLI 进程被终止后恢复不退款、不重发
 - 扫描：`npm run scan` 输出可追溯报告与成对可比窗口；发现项标注「待人工复核」
 - 真实链路补跑（2026-11-05）：真实模型 5 步 0 降级、aiwarden 契约+usage 7 通过 + 3 不适用、aiwarden 续跑 30 步 `replayed 1`
-- 测试：单元 131 / 契约 23 / 集成 21；`lint` / `format:check` / `typecheck` / `build` 全绿
-- CI：上一轮 `41801302392` 全绿（2026-11-04 代码）；**本轮改动尚未推送**，
-  推送后需重跑 `verify` / `e2e` / 三个 integration job 确认
+- 测试：单元 270 / 契约 35 / 集成 25（本地无真实服务时按规则跳过 8 条）；
+  `lint` / `format:check` / `typecheck` / `build` 全绿
+- CI：`master` 最新一轮全绿（2026-11-06）；job 清单见上文表格
 
 - 真实模型对照小样本（2026-11-06）：2 seeds × 10 步，两对同窗口可比、0 降级；
   seed 2 的探索策略在第 5 步触达角点，基线未触达；每局 10 步约 1.7 万已知 tokens

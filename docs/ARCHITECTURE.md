@@ -181,8 +181,8 @@ stopReason = game-finished | step-limit | budget-limit | assertion-failed
 > **2026-11-05 口径更新**：治理契约扩为 9 条后，真实实现变为
 > **6 条实跑 + 3 条显式不适用**（traceId、单次调用 tokens、按 session 查询用量）。
 > 成本链路改由 [`tests/integration/aiwarden-usage.test.ts`](../tests/integration/aiwarden-usage.test.ts)
-> 专门覆盖（真实服务 + Kafka 落库轮询）。**该测试已实现，但 2026-11-05 本机未起 aiwarden，
-> 已于 2026-11-05 实跑：真实 aiwarden 契约 + usage 共 **7 通过 + 3 显式不适用**。
+> 专门覆盖（真实服务 + Kafka 落库轮询）。该测试已实现，并已于 2026-11-05 本机起 aiwarden 实跑：
+> 真实 aiwarden 契约 + usage 共 **7 通过 + 3 显式不适用**。
 > 下面的 8 条版本运行记录保留为 2026-11-04 的时点证据。
 
 **2026-11-04 首次实跑**：治理契约 **7 条实跑通过 + 1 条标为不适用**，0 失败。
