@@ -44,7 +44,17 @@ interface Board {
 
 function boardOf(observation: Observation): Board | null {
   const raw = observation.state.payload["board"];
-  if (!Array.isArray(raw)) return null;
+  if (
+    !Array.isArray(raw) ||
+    raw.length !== 8 ||
+    raw.some(
+      (row: unknown) =>
+        !Array.isArray(row) ||
+        row.length !== 8 ||
+        row.some((cell: unknown) => cell !== 0 && cell !== 1 && cell !== 2),
+    )
+  )
+    return null;
   return { grid: raw as number[][] };
 }
 
@@ -132,139 +142,159 @@ export class OthelloOracle implements Oracle {
     const { before, after, action, outcome } = params;
     const violations: OracleViolation[] = [];
 
-    if (after === null || action === null || outcome !== "applied") {
+    if (after === null || outcome !== "applied") {
       return violations;
     }
 
     const beforeBoard = boardOf(before);
     const afterBoard = boardOf(after);
-    if (!beforeBoard || !afterBoard) return violations;
-
-    const row = Number(action.payload["row"]);
-    const col = Number(action.payload["col"]);
-    if (!Number.isInteger(row) || !Number.isInteger(col)) return violations;
-
-    const turn = before.state.turn === "black" ? BLACK : WHITE;
-
-    // OTH1：落子必须合法（能夹住对方棋子）
-    const expectedFlips = flipCount(beforeBoard.grid, row, col, turn);
-    if (expectedFlips === 0) {
-      violations.push({
-        code: "OTH1-illegal-move-accepted",
-        severity: "fatal",
-        message: `在 (${row},${col}) 落子被接受，但按规则不构成合法着（夹不住任何对方棋子）`,
-        stepNo: null,
-      });
-    }
-
-    // OTH2：落子后的整盘必须与本地投影逐格一致
-    //
-    // 这是比"翻转数量"更强的断言：不仅数量对，翻转位置也必须对。
-    // 本地投影独立重写规则，不复用游戏的 gameLogic。
-    const expectedBoard = projectBoard(beforeBoard.grid, row, col, turn);
-    const mismatched: string[] = [];
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        if (expectedBoard[r]?.[c] !== afterBoard.grid[r]?.[c]) mismatched.push(`(${r},${c})`);
-      }
-    }
-    if (mismatched.length > 0) {
-      violations.push({
-        code: "OTH2-board-projection-mismatch",
-        severity: "fatal",
-        message:
-          `落子后棋盘与本地投影不一致：${mismatched.length} 格不同，` +
-          `例如 ${mismatched.slice(0, 5).join(" ")}`,
-        stepNo: null,
-      });
-    }
-
-    // OTH3：落点必须是己方棋子
-    if (afterBoard.grid[row]?.[col] !== turn) {
-      violations.push({
-        code: "OTH3-move-point-not-owned",
-        severity: "fatal",
-        message: `落子后 (${row},${col}) 的棋子不是己方（期望 ${turn === BLACK ? "黑" : "白"}）`,
-        stepNo: null,
-      });
-    }
-
-    // OTH4：棋子总数守恒 —— 落子 +1 枚，翻转不改变总数
-    const beforeCount = countStones(beforeBoard.grid);
-    const afterCount = countStones(afterBoard.grid);
-    if (afterCount !== beforeCount + 1) {
-      violations.push({
-        code: "OTH4-stone-count-not-conserved",
-        severity: "fatal",
-        message: `棋子总数不守恒：落子前 ${beforeCount}，落子后 ${afterCount}（应 +1）`,
-        stepNo: null,
-      });
-    }
-
-    // OTH5：走子记录长度与 moveCount 一致
-    const moveCount = after.state.payload["moveCount"];
-    if (typeof moveCount === "number") {
-      const beforeCount2 = Number(before.state.payload["moveCount"] ?? 0);
-      if (moveCount !== beforeCount2 + 1) {
-        violations.push({
-          code: "OTH5-move-count-not-incremented",
+    if (!beforeBoard || !afterBoard)
+      return [
+        {
+          code: "OTH0-board-invalid",
           severity: "fatal",
-          message: `moveCount 未正确递增：${beforeCount2} → ${moveCount}（应 +1）`,
+          message: "棋盘必须是 8×8 且每格为 0/1/2",
+          stepNo: null,
+        },
+      ];
+
+    // action=null 为初始/最终状态检查，只略过迁移断言。
+    if (action !== null) {
+      const row = Number(action.payload["row"]);
+      const col = Number(action.payload["col"]);
+      if (!Number.isInteger(row) || !Number.isInteger(col)) return violations;
+
+      const turn = before.state.turn === "black" ? BLACK : WHITE;
+
+      // OTH1：落子必须合法（能夹住对方棋子）
+      const expectedFlips = flipCount(beforeBoard.grid, row, col, turn);
+      if (expectedFlips === 0) {
+        violations.push({
+          code: "OTH1-illegal-move-accepted",
+          severity: "fatal",
+          message: `在 (${row},${col}) 落子被接受，但按规则不构成合法着（夹不住任何对方棋子）`,
           stepNo: null,
         });
       }
-    }
 
-    // OTH6：回合流转必须符合 othello 的跳过规则
-    //
-    // 规则（gameLogic.ts:296-303）：
-    //   对方有子可下 → 换人
-    //   对方无子可下、自己有子可下 → 保持当前回合（跳过）
-    //   双方都无子可下 → 结束
-    //
-    // 本断言独立实现这条规则，与游戏的实现互为对照 ——
-    // 这正是通用层做不到的事（见 Oracle.ts 的 TurnRule 说明）。
-    if (before.state.turn !== null && after.state.turn === before.state.turn) {
-      // 执子方未变 → 必须是"对方无子可下"的合法跳过：
-      // 即落子之后，"对方"（另一方）在这个棋盘上没有任何合法着。
-      const opponent = turn === BLACK ? WHITE : BLACK;
-      const opponentHasMoves = hasAnyValidMove(afterBoard.grid, opponent);
-      const currentHasMoves = hasAnyValidMove(afterBoard.grid, turn);
-
-      if (opponentHasMoves) {
+      // OTH2：落子后的整盘必须与本地投影逐格一致
+      //
+      // 这是比"翻转数量"更强的断言：不仅数量对，翻转位置也必须对。
+      // 本地投影独立重写规则，不复用游戏的 gameLogic。
+      const expectedBoard = projectBoard(beforeBoard.grid, row, col, turn);
+      const mismatched: string[] = [];
+      const evidence: { field: string; expected: unknown; actual: unknown }[] = [];
+      for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+          if (expectedBoard[r]?.[c] !== afterBoard.grid[r]?.[c]) {
+            mismatched.push(`(${r},${c})`);
+            evidence.push({
+              field: `board[${r}][${c}]`,
+              expected: expectedBoard[r]?.[c],
+              actual: afterBoard.grid[r]?.[c],
+            });
+          }
+        }
+      }
+      if (mismatched.length > 0) {
         violations.push({
-          code: "OTH6-turn-should-have-switched",
+          code: "OTH2-board-projection-mismatch",
           severity: "fatal",
+          evidence,
           message:
-            `执子方未变（${before.state.turn}），但对方在落子后仍有合法着 —— ` +
-            `按 othello 规则此时应当换人`,
+            `落子后棋盘与本地投影不一致：${mismatched.length} 格不同，` +
+            `例如 ${mismatched.slice(0, 5).join(" ")}`,
           stepNo: null,
         });
       }
-      if (!currentHasMoves && after.state.status === "playing") {
-        violations.push({
-          code: "OTH6-both-passed-but-not-finished",
-          severity: "fatal",
-          message: "双方都无子可下，但对局未标记为 finished（应结束并判胜负）",
-          stepNo: null,
-        });
-      }
-    }
 
-    // OTH7：换人时，新执子方必须有子可下（否则对局卡死）
-    if (
-      before.state.turn !== null &&
-      after.state.turn !== null &&
-      after.state.turn !== before.state.turn &&
-      after.state.status === "playing" &&
-      after.state.legalActions.length === 0
-    ) {
-      violations.push({
-        code: "OTH7-new-turn-has-no-legal-moves",
-        severity: "fatal",
-        message: `回合切换到 "${after.state.turn}"，但该方无子可下 —— 对局会卡死`,
-        stepNo: null,
-      });
+      // OTH3：落点必须是己方棋子
+      if (afterBoard.grid[row]?.[col] !== turn) {
+        violations.push({
+          code: "OTH3-move-point-not-owned",
+          severity: "fatal",
+          message: `落子后 (${row},${col}) 的棋子不是己方（期望 ${turn === BLACK ? "黑" : "白"}）`,
+          stepNo: null,
+        });
+      }
+
+      // OTH4：棋子总数守恒 —— 落子 +1 枚，翻转不改变总数
+      const beforeCount = countStones(beforeBoard.grid);
+      const afterCount = countStones(afterBoard.grid);
+      if (afterCount !== beforeCount + 1) {
+        violations.push({
+          code: "OTH4-stone-count-not-conserved",
+          severity: "fatal",
+          message: `棋子总数不守恒：落子前 ${beforeCount}，落子后 ${afterCount}（应 +1）`,
+          stepNo: null,
+        });
+      }
+
+      // OTH5：走子记录长度与 moveCount 一致
+      const moveCount = after.state.payload["moveCount"];
+      if (typeof moveCount === "number") {
+        const beforeCount2 = Number(before.state.payload["moveCount"] ?? 0);
+        if (moveCount !== beforeCount2 + 1) {
+          violations.push({
+            code: "OTH5-move-count-not-incremented",
+            severity: "fatal",
+            message: `moveCount 未正确递增：${beforeCount2} → ${moveCount}（应 +1）`,
+            stepNo: null,
+          });
+        }
+      }
+
+      // OTH6：回合流转必须符合 othello 的跳过规则
+      //
+      // 规则（gameLogic.ts:296-303）：
+      //   对方有子可下 → 换人
+      //   对方无子可下、自己有子可下 → 保持当前回合（跳过）
+      //   双方都无子可下 → 结束
+      //
+      // 本断言独立实现这条规则，与游戏的实现互为对照 ——
+      // 这正是通用层做不到的事（见 Oracle.ts 的 TurnRule 说明）。
+      if (before.state.turn !== null && after.state.turn === before.state.turn) {
+        // 执子方未变 → 必须是"对方无子可下"的合法跳过：
+        // 即落子之后，"对方"（另一方）在这个棋盘上没有任何合法着。
+        const opponent = turn === BLACK ? WHITE : BLACK;
+        const opponentHasMoves = hasAnyValidMove(afterBoard.grid, opponent);
+        const currentHasMoves = hasAnyValidMove(afterBoard.grid, turn);
+
+        if (opponentHasMoves) {
+          violations.push({
+            code: "OTH6-turn-should-have-switched",
+            severity: "fatal",
+            message:
+              `执子方未变（${before.state.turn}），但对方在落子后仍有合法着 —— ` +
+              `按 othello 规则此时应当换人`,
+            stepNo: null,
+          });
+        }
+        if (!currentHasMoves && after.state.status === "playing") {
+          violations.push({
+            code: "OTH6-both-passed-but-not-finished",
+            severity: "fatal",
+            message: "双方都无子可下，但对局未标记为 finished（应结束并判胜负）",
+            stepNo: null,
+          });
+        }
+      }
+
+      // OTH7：换人时，新执子方必须有子可下（否则对局卡死）
+      if (
+        before.state.turn !== null &&
+        after.state.turn !== null &&
+        after.state.turn !== before.state.turn &&
+        after.state.status === "playing" &&
+        after.state.legalActions.length === 0
+      ) {
+        violations.push({
+          code: "OTH7-new-turn-has-no-legal-moves",
+          severity: "fatal",
+          message: `回合切换到 "${after.state.turn}"，但该方无子可下 —— 对局会卡死`,
+          stepNo: null,
+        });
+      }
     }
 
     // OTH8：服务端给出的合法动作集必须与本地独立计算一致
@@ -288,8 +318,16 @@ export class OthelloOracle implements Oracle {
       }
     }
 
-    // OTH9：终局 winner 必须与棋子数一致
+    // OTH9：终局必须双方无合法着，winner 与棋子数一致。
     if (after.state.status === "finished") {
+      if (hasAnyValidMove(afterBoard.grid, BLACK) || hasAnyValidMove(afterBoard.grid, WHITE)) {
+        violations.push({
+          code: "OTH9-premature-finish",
+          severity: "fatal",
+          message: "对局已 finished，但棋盘仍有合法落子",
+          stepNo: null,
+        });
+      }
       const blackStones = countColor(afterBoard.grid, BLACK);
       const whiteStones = countColor(afterBoard.grid, WHITE);
       const expectedWinner =

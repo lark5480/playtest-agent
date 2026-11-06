@@ -7,11 +7,14 @@
  * 写盘采用「临时文件 + rename」的原子替换，避免崩在写一半留下半截 JSON。
  */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import type { Finding } from "../core/report-core.js";
-import type { Action, Observation } from "../types/game.js";
+import type { Action, GameState, Observation } from "../types/game.js";
+import type { ModelBudgetState } from "../types/budget.js";
+import { validateModelBudgetState } from "../llm/budgeted-client.js";
 import type { IdempotencyFingerprint, StepRecord } from "../types/step.js";
 
 /**
@@ -36,7 +39,9 @@ export interface PendingStep {
 
 /** 一份完整检查点。 */
 export interface Checkpoint {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
+  readonly initialState: GameState;
+  readonly budget?: ModelBudgetState;
   readonly scenario: string;
   readonly seed: number;
   readonly adapter: string;
@@ -61,6 +66,57 @@ export interface CheckpointStore {
 
 export class FileCheckpointStore implements CheckpointStore {
   public readonly path: string;
+  private lockIdentity: string | undefined;
+
+  /** CLI 显式获取本地单写者锁；存活 PID 或无法确认的锁均拒绝。 */
+  acquire(): void {
+    if (this.lockIdentity) throw new Error("此检查点写者已持有锁");
+    mkdirSync(dirname(this.path), { recursive: true });
+    const lockPath = `${this.path}.lock`;
+    const identity = JSON.stringify({ pid: process.pid, owner: randomUUID() });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        writeFileSync(lockPath, identity, { flag: "wx", mode: 0o600 });
+        this.lockIdentity = identity;
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST")
+          throw new Error("无法建立检查点写者锁");
+      }
+      let raw: string;
+      let pid: number;
+      try {
+        raw = readFileSync(lockPath, "utf8");
+        const lock: unknown = JSON.parse(raw);
+        if (!isRecord(lock) || !Number.isSafeInteger(lock["pid"]) || Number(lock["pid"]) <= 0)
+          throw new Error();
+        pid = Number(lock["pid"]);
+      } catch {
+        throw new Error("检查点锁无效，无法确认原写者退出；拒绝覆盖");
+      }
+      try {
+        process.kill(pid, 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH")
+          throw new Error("无法确认检查点写者退出；拒绝覆盖");
+        if (attempt === 0 && readFileSync(lockPath, "utf8") === raw) {
+          rmSync(lockPath);
+          continue;
+        }
+      }
+      throw new Error("检查点已有活动写者；拒绝并行写入");
+    }
+    throw new Error("无法获取检查点写者锁");
+  }
+
+  release(): void {
+    if (!this.lockIdentity) return;
+    const lockPath = `${this.path}.lock`;
+    if (readFileSync(lockPath, "utf8") !== this.lockIdentity)
+      throw new Error("检查点锁所有者已改变，拒绝释放");
+    rmSync(lockPath);
+    this.lockIdentity = undefined;
+  }
 
   public constructor(filePath: string) {
     this.path = resolve(filePath);
@@ -83,21 +139,15 @@ export class FileCheckpointStore implements CheckpointStore {
 
   save(checkpoint: Checkpoint): void {
     mkdirSync(dirname(this.path), { recursive: true });
-    const temp = `${this.path}.tmp-${process.pid}`;
+    const temp = `${this.path}.tmp-${process.pid}-${randomUUID()}`;
     // mode 0o600 在 Windows 上不生效，但在类 Unix 上限制为仅本人可读。
     writeFileSync(temp, JSON.stringify(checkpoint, null, 2), { encoding: "utf8", mode: 0o600 });
     try {
       renameSync(temp, this.path);
-    } catch (error) {
-      // Windows 上 rename 覆盖已存在文件可能返回 EPERM/EACCES。
-      const code = (error as NodeJS.ErrnoException).code;
-      if (process.platform === "win32" && (code === "EPERM" || code === "EACCES")) {
-        rmSync(this.path, { force: true });
-        renameSync(temp, this.path);
-      } else {
-        rmSync(temp, { force: true });
-        throw error;
-      }
+    } catch {
+      // Windows 替换失败时绝不先删旧文件；旧的有效检查点必须保留。
+      rmSync(temp, { force: true });
+      throw new Error("检查点原子替换失败；上一有效文件已保留");
     }
   }
 
@@ -122,9 +172,24 @@ function requireNumber(value: unknown, field: string): void {
   }
 }
 
+function assertState(value: unknown, field: string): void {
+  if (!isRecord(value)) throw new Error(`检查点字段 ${field} 必须是状态对象`);
+  requireString(value["id"], `${field}.id`);
+  if (
+    !["waiting", "playing", "finished"].includes(String(value["status"])) ||
+    (value["turn"] !== null && typeof value["turn"] !== "string") ||
+    !Array.isArray(value["legalActions"]) ||
+    !isRecord(value["payload"])
+  )
+    throw new Error(`检查点字段 ${field} 状态无效`);
+}
+
 function assertCheckpoint(value: unknown): asserts value is Checkpoint {
   if (!isRecord(value)) throw new Error("检查点必须是对象");
-  if (value["schemaVersion"] !== 1) throw new Error("检查点 schemaVersion 必须是 1");
+  if (value["schemaVersion"] !== 2)
+    throw new Error("检查点 schemaVersion 不兼容：必须是 2；旧文件已保留，请使用对应旧版本恢复");
+  assertState(value["initialState"], "initialState");
+  if (value["budget"] !== undefined) validateModelBudgetState(value["budget"]);
 
   for (const field of [
     "scenario",

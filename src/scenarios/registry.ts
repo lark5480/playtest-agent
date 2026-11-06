@@ -5,6 +5,8 @@
  * 目前尚未接入加载器 —— 不要在注释里假装它会自动读 JSON。
  */
 
+export const MODEL_BUDGET_DEFAULTS = { playtest: 60, scan: 10, batch: 20 } as const;
+
 export interface Scenario {
   /** 场景标识（写进报告与文件名）。 */
   readonly name: string;

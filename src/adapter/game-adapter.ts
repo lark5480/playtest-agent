@@ -18,6 +18,9 @@ export interface GameAdapter {
   /** 适配器标识（写进报告，便于区分被测对象）。 */
   readonly name: string;
 
+  /** act 带服务端条件写保护；只有此能力可安全重试结果不明的原动作。 */
+  readonly supportsConditionalAct?: boolean;
+
   /**
    * 开一局。
    *

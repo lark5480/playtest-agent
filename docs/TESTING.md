@@ -91,7 +91,14 @@
 ## 4. 验收判据（MVP）
 
 ```bash
-# 0) 起被测游戏（本地，免云端）
+# 0) 缺陷闭环（无外部服务、无密钥、无模型）
+npm run demo
+#    期望：预置漏翻被检出；新进程复现 reproduced；健康前缀 not-reproduced；
+#    summary 标 injected-fixture，退出 0。进程级门禁：
+npm run test:integration:replay
+npm run test:integration:budget
+
+# 0.1) 起被测游戏（本地，免云端）
 cd ../othello-online && npm run build && npm run preview   # :5173
 
 # 1) Agent 自动打完一局
@@ -121,6 +128,13 @@ npm run scan -- --scenario smoke --seeds=1-50 --max-steps=60
 ```
 
 **完成的判定**（避免"做完了就算数"）：
+
+- 报告 v2 的 `status: passed` 仅在**正常终局**且必要检查完成时出现；步限、预算、
+  停滞、执行失败与证据不足均为 `incomplete` 或 `failed`，退出码按 1/4/5/6 分类。
+- `replay` 必须在新进程、新房间执行录制动作，不能问模型；早于原首错步分歧记
+  `diverged`，健康实现的同前缀消失只记 `not-reproduced` 且限定范围。
+- 模型预算测试用本地假模型统计**实际请求数**；未知 usage 不得填 0，恢复不得
+  退还在途调用额度。CI 默认不调用付费模型。
 
 - 上述命令**全部可复现**，真实输出贴进 README；
 - **真实缺陷**：按裁决 18，不强制要求发现缺陷；若扫描为零，必须如实记录

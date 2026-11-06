@@ -8,6 +8,7 @@
  */
 
 import type { LlmClient, LlmPickResult, LlmUsage } from "../strategy/llm.js";
+import { cancellationError, LlmRequestError } from "./request.js";
 
 export interface OpenAiCompatibleOptions {
   /** 端点（OpenAI 兼容，如 https://api.deepseek.com/v1）。 */
@@ -44,92 +45,124 @@ export class OpenAiCompatibleClient implements LlmClient {
       readonly payload: Readonly<Record<string, unknown>>;
     }[];
     readonly prompt: string;
+    readonly signal?: AbortSignal;
   }): Promise<LlmPickResult> {
-    const res = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        messages: [
-          {
-            role: "system",
-            content:
-              "你是一个游戏自动测试 Agent 的决策器。只返回一个合法动作的 id，不要任何解释、不要 markdown 代码块。",
-          },
-          { role: "user", content: params.prompt },
-        ],
-        temperature: 0,
-        max_tokens: this.maxTokens,
-      }),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
+    const timeout = AbortSignal.timeout(this.timeoutMs);
+    const signal = params.signal ? AbortSignal.any([params.signal, timeout]) : timeout;
+    try {
+      const res = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: [
+            {
+              role: "system",
+              content:
+                "你是一个游戏自动测试 Agent 的决策器。只返回一个合法动作的 id，不要任何解释、不要 markdown 代码块。",
+            },
+            { role: "user", content: params.prompt },
+          ],
+          temperature: 0,
+          max_tokens: this.maxTokens,
+        }),
+        signal,
+      });
 
-    if (!res.ok) {
-      throw new Error(
-        `模型请求失败：HTTP ${res.status} ${(await res.text().catch(() => "")).slice(0, 120)}`,
-      );
-    }
-
-    const data = (await res.json()) as {
-      choices?: {
-        message?: { content?: string; reasoning_content?: string };
-      }[];
-      usage?: {
-        prompt_tokens?: number;
-        completion_tokens?: number;
-        total_tokens?: number;
-      };
-    };
-    const usage = usageOf(data.usage);
-    const message = data.choices?.[0]?.message;
-    // 推理模型可能把最终答案放在 content，也可能只有 reasoning_content。
-    const content = message?.content?.trim();
-    const reasoning = message?.reasoning_content?.trim();
-    if (!content && !reasoning) throw new Error("模型返回内容为空");
-
-    // 依次尝试 content → reasoning：
-    // 1) 整段就是 id；
-    // 2) 文本里提到合法 id 时取**最后出现**的那个（推理模型通常把结论放末尾）。
-    // 任何合法动作都可接受；这里不做棋力判断，只保证不臆造动作。
-    for (const source of [content, reasoning]) {
-      if (!source) continue;
-
-      const cleaned = source.replace(/^["'`]|["'`]$/g, "").trim();
-      const direct = params.actions.find((a) => a.id === cleaned);
-      if (direct) {
-        return { actionId: direct.id, ...(usage ? { usage } : {}) };
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => {});
+        throw new LlmRequestError("http", res.status);
       }
 
-      const mentioned = params.actions
-        .map((action) => ({ action, index: source.lastIndexOf(action.id) }))
-        .filter((item) => item.index >= 0)
-        .sort((a, b) => b.index - a.index || b.action.id.length - a.action.id.length);
-      if (mentioned.length > 0) {
-        return { actionId: mentioned[0]!.action.id, ...(usage ? { usage } : {}) };
-      }
-    }
+      const data: unknown = await res.json().catch(() => {
+        throw new LlmRequestError("invalid-response");
+      });
+      const root = recordOf(data);
+      const usage = usageOf(root?.["usage"]);
+      const choices = root?.["choices"];
+      const message = Array.isArray(choices) ? recordOf(recordOf(choices[0])?.["message"]) : null;
+      // 先保全 usage；空内容/畸形 choices 不得把已知用量变成丢失。
+      const content = typeof message?.["content"] === "string" ? message["content"].trim() : "";
+      const reasoning =
+        typeof message?.["reasoning_content"] === "string"
+          ? message["reasoning_content"].trim()
+          : "";
 
-    return { actionId: null, ...(usage ? { usage } : {}) };
+      // 依次尝试 content → reasoning：
+      // 1) 整段就是 id；
+      // 2) 文本里提到合法 id 时取**最后出现**的那个（推理模型通常把结论放末尾）。
+      // 任何合法动作都可接受；这里不做棋力判断，只保证不臆造动作。
+      for (const source of [content, reasoning]) {
+        if (!source) continue;
+
+        const cleaned = source.replace(/^["'`]|["'`]$/g, "").trim();
+        const direct = params.actions.find((a) => a.id === cleaned);
+        if (direct) {
+          return { actionId: direct.id, ...(usage ? { usage } : {}) };
+        }
+
+        const mentioned = params.actions
+          .map((action) => ({ action, index: lastActionMention(source, action.id) }))
+          .filter((item) => item.index >= 0)
+          .sort((a, b) => b.index - a.index || b.action.id.length - a.action.id.length);
+        if (mentioned.length > 0) {
+          return { actionId: mentioned[0]!.action.id, ...(usage ? { usage } : {}) };
+        }
+      }
+
+      return { actionId: null, ...(usage ? { usage } : {}) };
+    } catch (error) {
+      if (signal.aborted) throw cancellationError(signal);
+      if (error instanceof LlmRequestError) throw error;
+      throw new LlmRequestError("network");
+    }
   }
 }
 
-function usageOf(
-  raw:
-    | {
-        readonly prompt_tokens?: number;
-        readonly completion_tokens?: number;
-        readonly total_tokens?: number;
-      }
-    | undefined,
-): LlmUsage | undefined {
-  if (!raw) return undefined;
-  const promptTokens = raw.prompt_tokens ?? 0;
-  const completionTokens = raw.completion_tokens ?? 0;
-  const totalTokens = raw.total_tokens ?? promptTokens + completionTokens;
-  return { promptTokens, completionTokens, totalTokens };
+function recordOf(raw: unknown): Record<string, unknown> | null {
+  return raw !== null && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : null;
+}
+
+function tokenCount(raw: unknown): raw is number {
+  return typeof raw === "number" && Number.isSafeInteger(raw) && raw >= 0;
+}
+
+function usageOf(raw: unknown): LlmUsage | undefined {
+  const usage = recordOf(raw);
+  if (!usage) return undefined;
+  const prompt = usage["prompt_tokens"];
+  const completion = usage["completion_tokens"];
+  const total = usage["total_tokens"];
+  // 缺失字段不补 0；仅在两部分都已知时计算总量。
+  const totalTokens =
+    total === undefined && tokenCount(prompt) && tokenCount(completion)
+      ? prompt + completion
+      : total;
+  if (!tokenCount(totalTokens)) return undefined;
+  return {
+    totalTokens,
+    ...(tokenCount(prompt) ? { promptTokens: prompt } : {}),
+    ...(tokenCount(completion) ? { completionTokens: completion } : {}),
+  };
+}
+
+/** 防止合法 id 2,3 被错误匹配成非法输出 12,30 的子串。 */
+function lastActionMention(source: string, id: string): number {
+  if (!id) return -1;
+  let index = source.lastIndexOf(id);
+  while (index >= 0) {
+    const before = source[index - 1] ?? "";
+    const after = source[index + id.length] ?? "";
+    if (!/[A-Za-z0-9_,]/.test(before) && !/[A-Za-z0-9_,]/.test(after)) return index;
+    if (index === 0) break;
+    index = source.lastIndexOf(id, index - 1);
+  }
+  return -1;
 }
 
 /**

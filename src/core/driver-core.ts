@@ -13,7 +13,7 @@
 import type { Action, Decision, GameState, Observation } from "../types/game.js";
 import type { IdempotencyFingerprint } from "../types/step.js";
 
-import { computeFingerprint } from "./fingerprint.js";
+import { canonicalize, computeFingerprint } from "./fingerprint.js";
 
 /**
  * 驱动上下文：一次 playtest 运行的常量部分。
@@ -59,13 +59,10 @@ export function nextFingerprint(
 /**
  * 判断对局是否已终止。
  *
- * 终止的两种来源：状态本身是 finished；或轮到某人但**没有合法动作**
- * （死局 —— 无处可走但状态没被标记 finished）。
+ * 只描述游戏状态；停滞、步限、断言失败属于独立的驱动停止原因。
  */
 export function isTerminal(state: GameState): boolean {
-  if (state.status === "finished") return true;
-  if (state.turn !== null && state.legalActions.length === 0) return true;
-  return false;
+  return state.status === "finished";
 }
 
 /**
@@ -99,14 +96,13 @@ export function planNextStep(params: {
   // 策略给了动作，但必须落在"合法动作集"内 —— Agent 不允许臆造动作。
   // 这条约束是 Oracle 能抓到"策略越界"类缺陷的前提。
   const action = decision.action;
-  if (action !== null) {
-    const legal = observation.state.legalActions.some((candidate) => candidate.id === action.id);
-    if (!legal) {
-      throw new Error(
-        `策略返回了非法动作 "${action.id}"：不在合法动作集内（合法动作 ${observation.state.legalActions.length} 个）`,
-      );
-    }
-  }
+  if (action === null) throw new Error("策略在非终局返回空动作");
+  const payload = JSON.stringify(canonicalize(action.payload));
+  const legal = observation.state.legalActions.some(
+    (candidate) =>
+      candidate.id === action.id && JSON.stringify(canonicalize(candidate.payload)) === payload,
+  );
+  if (!legal) throw new Error("策略返回了非法动作：ID 与完整 payload 必须同时匹配合法动作集");
 
   return {
     stepNo,

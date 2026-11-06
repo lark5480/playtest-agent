@@ -1,75 +1,39 @@
-/**
- * 纯函数内核 · 报告渲染（地基冻结契约 ⑧）
- *
- * 报告的**纯渲染**在此，薄壳（写文件）在 `src/report/`。
- * 渲染必须是纯函数：同样的步骤序列必得同样的报告字节，
- * 这样报告才能进版本控制、能被 diff、能作为验收证据。
- *
- * JSON 结构冻结：报告要被机器再解析（跨场景对比、基线 diff）。
- */
-
+/** 报告 v2：纯投影、统一结论与渲染；IO 留在 report/。 */
+import type { ModelBudgetState } from "../types/budget.js";
+import type { Action, GameState } from "../types/game.js";
+import type { ErrorCategory, PublicSnapshot, RunMetadata, StopReason } from "../types/run.js";
 import type { StepOutcome, StepRecord, TokenSource } from "../types/step.js";
+import { parseReportJson, publicAction, publicSnapshot, snapshotHash } from "./recording.js";
 
-/**
- * 报告的成本汇总（只汇总**真实取得**的数值，缺失步单独计数）。
- */
+/** 三种不同单位绝不相加。null 表示没有完整可归因用量，而非零消耗。 */
 export interface ReportUsage {
-  readonly llm: number;
-  readonly governance: number;
-  readonly total: number;
+  readonly llm: number | null;
+  readonly governance: number | null;
+  readonly synthetic: number | null;
   readonly sources: readonly TokenSource[];
-  /** 既没有 llmTokens 也没有 governance tokens 的步数。 */
   readonly unavailableSteps: number;
 }
-
-/**
- * 报告的机器可读结构（冻结契约 ⑧）。
- */
-export interface ReportJson {
-  readonly schemaVersion: 1;
-  readonly scenario: string;
-  readonly session: string;
-  readonly businessKey: string;
-  readonly seed: number;
-  readonly startedAt: number;
-  readonly finishedAt: number;
-  readonly status: ReportStatus;
-  readonly stepCount: number;
-  readonly degradedSteps: number;
-  readonly replayedSteps: number;
-  readonly failedSteps: number;
-  /** 治理来源（"aiwarden-http" = 真实治理面；"in-memory" = 降级替身）。 */
-  readonly governanceSource: string;
-  /** 治理降级说明（降级时非空）。 */
-  readonly governanceDegradedReason?: string;
-  /** 成本汇总（无可归因数据时 total=0 且 unavailableSteps>0）。 */
-  readonly usage: ReportUsage;
-  readonly findings: readonly Finding[];
-  readonly steps: readonly StepJson[];
-}
-
 export type ReportStatus = "passed" | "failed" | "incomplete";
-
-/**
- * 一条发现（缺陷或告警）。
- */
+export type AssertionStatus = "passed" | "failed" | "not-evaluated";
 export interface Finding {
-  /** 缺陷编号（稳定标识，便于跨次运行对照）。 */
   readonly code: string;
-  /** 严重级别。 */
   readonly severity: "fatal" | "warning";
-  /** 描述。 */
   readonly message: string;
-  /** 关联的步骤序号；无关联时为 null。 */
   readonly stepNo: number | null;
+  readonly evidence?: readonly {
+    readonly field: string;
+    readonly expected: unknown;
+    readonly actual: unknown;
+  }[];
 }
-
-/**
- * 单步的机器可读结构。
- */
 export interface StepJson {
   readonly stepNo: number;
   readonly actionId: string | null;
+  readonly action: Action | null;
+  readonly before: PublicSnapshot;
+  readonly after: PublicSnapshot | null;
+  readonly beforeHash: string;
+  readonly afterHash: string | null;
   readonly outcome: StepOutcome;
   readonly degraded: boolean;
   readonly degradedReason?: string;
@@ -77,75 +41,149 @@ export interface StepJson {
   readonly digest: string;
   readonly elapsedMs: number;
   readonly error?: string;
-  /** 治理侧 traceId（真实实现不提供时不填）。 */
   readonly traceId?: string;
-  /** 本步模型调用消耗的 token 数。 */
   readonly llmTokens?: number;
-  /** 本步治理侧消耗的 token 数。 */
   readonly governanceTokens?: number;
-  /** 本步 token 数据来源（可能同时有模型与治理两个来源）。 */
   readonly tokenSources?: readonly TokenSource[];
-  /** 未取得成本数据的显式原因。 */
   readonly tokensUnavailableReason?: string;
 }
-
-/** 终态对应的报告状态。 */
-function statusOf(steps: readonly StepRecord[], findings: readonly Finding[]): ReportStatus {
-  if (findings.some((f) => f.severity === "fatal")) return "failed";
-  if (findings.length > 0) return "passed";
-  const last = steps[steps.length - 1];
-  if (!last) return "incomplete";
-  if (last.outcome === "failed" || last.outcome === "rejected") return "incomplete";
-  return "passed";
+export interface ReportJson {
+  readonly schemaVersion: 2;
+  readonly scenario: string;
+  readonly session: string;
+  readonly businessKey: string;
+  readonly seed: number;
+  readonly startedAt: number;
+  readonly finishedAt: number;
+  readonly metadata: RunMetadata;
+  readonly initialState: PublicSnapshot;
+  readonly finalState: PublicSnapshot;
+  readonly stopReason: StopReason;
+  readonly gameTerminal: boolean;
+  readonly errorCategory?: ErrorCategory;
+  readonly budget?: ModelBudgetState;
+  readonly status: ReportStatus;
+  readonly assertionStatus: AssertionStatus;
+  readonly stepCount: number;
+  readonly degradedSteps: number;
+  readonly replayedSteps: number;
+  readonly failedSteps: number;
+  readonly governanceSource: string;
+  readonly governanceDegradedReason?: string;
+  readonly usage: ReportUsage;
+  readonly findings: readonly Finding[];
+  readonly steps: readonly StepJson[];
 }
 
-/**
- * 按治理来源推断缺省口径：
- * 内存替身的固定 token 是合成值，不能冒充真实成本。
- */
-function fallbackTokenSource(governanceSource: string): TokenSource {
-  return governanceSource === "in-memory" ? "synthetic" : "governance-usage";
-}
-
-function tokenSourcesOf(step: StepRecord, fallback: TokenSource): TokenSource[] {
-  const sources = new Set<TokenSource>();
-  if (step.llmTokens !== undefined) sources.add("model-usage");
-  if (step.governance.tokens !== undefined) {
-    sources.add(step.governance.tokenSource ?? fallback);
-  } else if (step.governance.tokenSource) {
-    sources.add(step.governance.tokenSource);
+/** 构建与严格读取共用，避免 CLI / 渲染器各自猜测结论。 */
+export function deriveReportResult(
+  report: Pick<
+    ReportJson,
+    | "steps"
+    | "findings"
+    | "stopReason"
+    | "gameTerminal"
+    | "finalState"
+    | "metadata"
+    | "errorCategory"
+  >,
+): { status: ReportStatus; assertionStatus: AssertionStatus } {
+  if (report.findings.some((finding) => finding.severity === "fatal")) {
+    return { status: "failed", assertionStatus: "failed" };
   }
-  return [...sources];
+  const terminal =
+    report.gameTerminal &&
+    report.finalState.status === "finished" &&
+    report.finalState.turn === null &&
+    report.finalState.legalActions.length === 0 &&
+    (report.metadata.game === "othello"
+      ? report.finalState.payload["winner"] !== null
+      : report.finalState.payload["result"] !== null);
+  const checkedStep = report.steps.some(
+    (step) =>
+      step.action !== null &&
+      step.after !== null &&
+      (step.outcome === "applied" || step.outcome === "replayed"),
+  );
+  const checked = report.metadata.oracle !== "unknown" && (checkedStep || terminal);
+  const completeSteps = report.steps.every(
+    (step) =>
+      step.action !== null &&
+      step.after !== null &&
+      (step.outcome === "applied" || step.outcome === "replayed"),
+  );
+  return {
+    status:
+      terminal &&
+      checked &&
+      completeSteps &&
+      !report.errorCategory &&
+      report.stopReason === "game-finished"
+        ? "passed"
+        : "incomplete",
+    assertionStatus: checked ? "passed" : "not-evaluated",
+  };
 }
 
-function usageOf(steps: readonly StepRecord[], fallback: TokenSource): ReportUsage {
-  let llm = 0;
-  let governance = 0;
-  let unavailableSteps = 0;
+/** 模型账目优先于动作账目，包含未形成动作的尝试且不双计。 */
+export function summarizeUsage(steps: readonly StepJson[], budget?: ModelBudgetState): ReportUsage {
   const sources = new Set<TokenSource>();
-
-  for (const step of steps) {
-    if (step.llmTokens !== undefined) {
-      llm += step.llmTokens;
-      sources.add("model-usage");
-    }
-    if (step.governance.tokens !== undefined) {
-      governance += step.governance.tokens;
-      sources.add(step.governance.tokenSource ?? fallback);
-    } else if (step.governance.tokenSource) {
-      sources.add(step.governance.tokenSource);
-    }
-    if (step.llmTokens === undefined && step.governance.tokens === undefined) {
-      unavailableSteps += 1;
-    }
-  }
-
-  return { llm, governance, total: llm + governance, sources: [...sources], unavailableSteps };
+  for (const step of steps) for (const source of step.tokenSources ?? []) sources.add(source);
+  const sumComplete = (values: readonly (number | undefined)[]): number | null =>
+    values.length > 0 && values.every((value) => value !== undefined)
+      ? values.reduce<number>((sum, value) => sum + value!, 0)
+      : null;
+  const llm = budget
+    ? sumComplete(
+        budget.attempts.map((attempt) =>
+          attempt.state === "settled" ? attempt.tokens : undefined,
+        ),
+      )
+    : sumComplete(steps.map((step) => step.llmTokens));
+  if (budget?.attempts.some((attempt) => attempt.tokens !== undefined)) sources.add("model-usage");
+  if (
+    budget?.attempts.some((attempt) => attempt.state !== "settled" || attempt.tokens === undefined)
+  )
+    sources.add("unavailable");
+  const unattributed = steps.some(
+    (step) =>
+      step.governanceTokens === undefined &&
+      !(step.tokenSources ?? []).some(
+        (source) => source === "synthetic" || source === "governance-usage",
+      ),
+  );
+  const ofSource = (source: TokenSource): number | null =>
+    unattributed
+      ? null
+      : sumComplete(
+          steps
+            .filter((step) => step.tokenSources?.includes(source))
+            .map((step) => step.governanceTokens),
+        );
+  return {
+    llm,
+    governance: ofSource("governance-usage"),
+    synthetic: ofSource("synthetic"),
+    sources: [...sources].sort(),
+    unavailableSteps: steps.filter(
+      (step) => step.llmTokens === undefined && step.governanceTokens === undefined,
+    ).length,
+  };
 }
 
-/**
- * 把步骤序列转成机器可读报告（纯函数）。
- */
+export function reportExitCode(report: ReportJson): number {
+  if (report.findings.some((finding) => finding.severity === "fatal")) return 1;
+  if (report.stopReason === "state-diverged" || report.errorCategory === "state") return 4;
+  if (
+    report.stopReason === "execution-failed" ||
+    report.errorCategory === "governance" ||
+    report.errorCategory === "game" ||
+    report.errorCategory === "strategy"
+  )
+    return 6;
+  return deriveReportResult(report).status === "passed" ? 0 : 5;
+}
+
 export function buildReportJson(params: {
   readonly scenario: string;
   readonly session: string;
@@ -153,160 +191,171 @@ export function buildReportJson(params: {
   readonly seed: number;
   readonly startedAt: number;
   readonly finishedAt: number;
+  readonly metadata: RunMetadata;
+  readonly initialState: GameState;
+  readonly finalState: GameState;
+  readonly stopReason: StopReason;
+  readonly gameTerminal: boolean;
+  readonly errorCategory?: ErrorCategory;
+  readonly budget?: ModelBudgetState;
   readonly steps: readonly StepRecord[];
   readonly findings: readonly Finding[];
   readonly governanceSource?: string;
   readonly governanceDegradedReason?: string;
 }): ReportJson {
-  const { steps, findings } = params;
+  const game = params.metadata.game;
   const governanceSource = params.governanceSource ?? "unknown";
-  const fallback = fallbackTokenSource(governanceSource);
-
-  return {
-    schemaVersion: 1,
+  const steps: StepJson[] = params.steps.map((step) => {
+    const before = publicSnapshot(game, step.observation.state);
+    const after = step.observationAfter ? publicSnapshot(game, step.observationAfter.state) : null;
+    const action = step.action === null ? null : publicAction(game, step.action);
+    const tokenSources: TokenSource[] = [];
+    if (step.llmTokens !== undefined) tokenSources.push("model-usage");
+    if (step.governance.tokenSource) tokenSources.push(step.governance.tokenSource);
+    else if (step.governance.tokens !== undefined)
+      tokenSources.push(governanceSource === "in-memory" ? "synthetic" : "governance-usage");
+    return {
+      stepNo: step.stepNo,
+      actionId: action?.id ?? null,
+      action,
+      before,
+      after,
+      beforeHash: snapshotHash(before),
+      afterHash: after ? snapshotHash(after) : null,
+      outcome: step.outcome,
+      degraded: step.degraded,
+      ...(step.degraded ? { degradedReason: "模型不可用或输出无效，已降级到确定性基线" } : {}),
+      replayed: step.governance.replayed,
+      digest: step.fingerprint.digest,
+      elapsedMs: step.elapsedMs,
+      ...(step.error ? { error: "执行失败；原始错误文本已省略" } : {}),
+      ...(step.governance.traceId ? { traceId: step.governance.traceId } : {}),
+      ...(step.llmTokens !== undefined ? { llmTokens: step.llmTokens } : {}),
+      ...(step.governance.tokens !== undefined ? { governanceTokens: step.governance.tokens } : {}),
+      ...(tokenSources.length ? { tokenSources: [...new Set(tokenSources)].sort() } : {}),
+      ...(step.governance.tokensUnavailableReason
+        ? { tokensUnavailableReason: "未取得完整用量证据" }
+        : {}),
+    };
+  });
+  const projected = {
+    metadata: params.metadata,
+    initialState: publicSnapshot(game, params.initialState),
+    finalState: publicSnapshot(game, params.finalState),
+    stopReason: params.stopReason,
+    gameTerminal: params.gameTerminal,
+    errorCategory: params.errorCategory,
+    steps,
+    findings: params.findings,
+  };
+  return parseReportJson({
+    schemaVersion: 2,
     scenario: params.scenario,
     session: params.session,
     businessKey: params.businessKey,
     seed: params.seed,
     startedAt: params.startedAt,
     finishedAt: params.finishedAt,
-    status: statusOf(steps, findings),
+    ...projected,
+    ...deriveReportResult(projected),
+    ...(params.budget ? { budget: params.budget } : {}),
     stepCount: steps.length,
-    degradedSteps: steps.filter((s) => s.degraded).length,
-    replayedSteps: steps.filter((s) => s.governance.replayed).length,
-    failedSteps: steps.filter((s) => s.outcome === "failed" || s.outcome === "rejected").length,
+    degradedSteps: steps.filter((step) => step.degraded).length,
+    replayedSteps: steps.filter((step) => step.replayed).length,
+    failedSteps: steps.filter((step) => step.outcome === "failed" || step.outcome === "rejected")
+      .length,
     governanceSource,
     ...(params.governanceDegradedReason
-      ? { governanceDegradedReason: params.governanceDegradedReason }
+      ? { governanceDegradedReason: "治理不可用或证据不完整，已显式降级" }
       : {}),
-    usage: usageOf(steps, fallback),
-    findings,
-    steps: steps.map((s) => ({
-      stepNo: s.stepNo,
-      actionId: s.action?.id ?? null,
-      outcome: s.outcome,
-      degraded: s.degraded,
-      ...(s.degradedReason ? { degradedReason: s.degradedReason } : {}),
-      replayed: s.governance.replayed,
-      digest: s.fingerprint.digest,
-      elapsedMs: s.elapsedMs,
-      ...(s.error ? { error: s.error } : {}),
-      ...(s.governance.traceId ? { traceId: s.governance.traceId } : {}),
-      ...(s.llmTokens !== undefined ? { llmTokens: s.llmTokens } : {}),
-      ...(s.governance.tokens !== undefined ? { governanceTokens: s.governance.tokens } : {}),
-      ...(tokenSourcesOf(s, fallback).length > 0
-        ? { tokenSources: tokenSourcesOf(s, fallback) }
-        : {}),
-      ...(s.governance.tokensUnavailableReason
-        ? { tokensUnavailableReason: s.governance.tokensUnavailableReason }
-        : {}),
-    })),
-  };
+    usage: summarizeUsage(steps, params.budget),
+  });
 }
 
-/**
- * 把报告渲染成 Markdown（纯函数）。
- *
- * 报告结构对齐 `othello-online/tests/playtest/bug-report-template.md`，
- * 编号体系与 `smoke-checklist.md` 对齐 —— 机器结果能直接接人工观察表。
- */
-export function renderReportMarkdown(report: ReportJson): string {
-  const lines: string[] = [];
-  lines.push(`# Playtest 报告 · ${report.scenario}`);
-  lines.push("");
-  lines.push("| 项 | 值 |");
-  lines.push("|---|---|");
-  lines.push(`| 状态 | **${report.status}** |`);
-  lines.push(`| 场景 | ${report.scenario} |`);
-  lines.push(`| 会话 | \`${report.session}\` |`);
-  lines.push(`| 对局 | \`${report.businessKey}\` |`);
-  lines.push(`| 随机种子 | \`${report.seed}\` |`);
-  lines.push(`| 步数 | ${report.stepCount} |`);
-  lines.push(`| 降级步数 | ${report.degradedSteps} |`);
-  lines.push(`| 重放步数（幂等命中） | ${report.replayedSteps} |`);
-  lines.push(`| 失败步数 | ${report.failedSteps} |`);
-  lines.push(`| 治理来源 | \`${report.governanceSource}\` |`);
-  lines.push("");
-  if (report.governanceDegradedReason) {
-    lines.push(`> ⚠️ **治理降级**：${report.governanceDegradedReason}`);
-    lines.push("");
-  }
+export function escapeMarkdown(value: unknown): string {
+  return String(value ?? "-")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\|/g, "&#124;")
+    .replace(/`/g, "&#96;")
+    .replace(/[\r\n]/g, " ")
+    .replace(/([\\*_[\]])/g, "\\$1");
+}
 
-  lines.push("## 治理证据");
-  lines.push("");
-  lines.push("| 项 | 值 |");
-  lines.push("|---|---|");
-  lines.push(`| LLM tokens | ${report.usage.llm} |`);
-  lines.push(`| 治理 tokens | ${report.usage.governance} |`);
-  lines.push(`| tokens 合计 | ${report.usage.total} |`);
+export function renderReportMarkdown(input: ReportJson): string {
+  const report = parseReportJson(input);
+  const e = escapeMarkdown;
+  const lines = [
+    `# Playtest 报告 · ${e(report.scenario)}`,
+    "",
+    "| 项 | 值 |",
+    "|---|---|",
+    `| 状态 | **${report.status}** |`,
+    `| 断言 | ${report.assertionStatus} |`,
+    `| 停止原因 | ${report.stopReason} |`,
+    `| 游戏终局 | ${report.gameTerminal ? "是" : "否"} |`,
+    `| 错误类别 | ${report.errorCategory ?? "无"} |`,
+    `| 证据来源 | ${report.metadata.source} |`,
+    `| 游戏 / 目标版本 | ${report.metadata.game} / ${e(report.metadata.targetVersion)} |`,
+    `| Agent / Oracle / 策略 | ${e(report.metadata.agentVersion)} / ${e(report.metadata.oracle)} / ${e(report.metadata.strategy)} |`,
+    `| 会话 / 对局 | ${e(report.session)} / ${e(report.businessKey)} |`,
+    `| 随机种子 | ${report.seed} |`,
+    `| 步数 / 上限 | ${report.stepCount} / ${report.metadata.maxSteps} |`,
+    `| 降级 / 重放 / 失败步数 | ${report.degradedSteps} / ${report.replayedSteps} / ${report.failedSteps} |`,
+    `| 治理来源 | ${e(report.governanceSource)} |`,
+    "",
+  ];
+  if (report.governanceDegradedReason)
+    lines.push(`> 治理降级：${e(report.governanceDegradedReason)}`, "");
   lines.push(
-    `| token 来源 | ${report.usage.sources.length > 0 ? report.usage.sources.join(", ") : "无"} |`,
+    "## 治理证据",
+    "",
+    "| 项 | 值 |",
+    "|---|---|",
+    `| LLM tokens | ${report.usage.llm ?? "unknown"} |`,
+    `| 治理配额当量 | ${report.usage.governance ?? "unknown"} |`,
+    `| 替身合成值 | ${report.usage.synthetic ?? "unknown"} |`,
+    `| 来源 | ${report.usage.sources.join(", ") || "无"} |`,
+    `| 无成本数据步数 | ${report.usage.unavailableSteps} |`,
+    "",
+    "> 三种单位分列；合成值不代表真实成本。unknown 不是 0；已知部分不能冒充完整总用量。",
+    "",
   );
-  lines.push(`| 无成本数据步数 | ${report.usage.unavailableSteps} |`);
-  lines.push(
-    `| traceId 覆盖步数 | ${report.steps.filter((s) => s.traceId).length}/${report.stepCount} |`,
-  );
-  lines.push("");
-  if (report.usage.sources.includes("synthetic")) {
-    lines.push("> 内存替身的 token 数是固定合成值，不代表真实成本。");
-    lines.push("");
-  }
-  if (report.usage.sources.includes("governance-usage")) {
-    lines.push("> 治理 tokens 为 aiwarden 工具调用的配额当量，不是模型 token。");
-    lines.push("");
-  }
-  if (report.usage.unavailableSteps > 0) {
-    lines.push(`> 有 ${report.usage.unavailableSteps} 步未取得成本数据；报告中未填 0。`);
-    lines.push("");
-  }
-
-  lines.push("## 发现");
-  lines.push("");
-  if (report.findings.length === 0) {
-    lines.push("无。");
-  } else {
-    lines.push("| 编号 | 级别 | 步骤 | 描述 |");
-    lines.push("|---|---|---|---|");
-    for (const f of report.findings) {
-      lines.push(`| ${f.code} | ${f.severity} | ${f.stepNo ?? "-"} | ${f.message} |`);
+  if (report.budget)
+    lines.push(
+      `> 模型尝试 ${report.budget.attempts.length}/${report.budget.maxCalls}；token 软停止线 ${report.budget.tokenLimit ?? "未设置"}。`,
+      "",
+    );
+  lines.push("## 发现", "");
+  if (!report.findings.length) lines.push("无。未发现违规不等于整局已完成。");
+  else {
+    lines.push("| 编号 | 级别 | 步骤 | 描述 |", "|---|---|---|---|");
+    for (const finding of report.findings) {
+      lines.push(
+        `| ${e(finding.code)} | ${finding.severity} | ${finding.stepNo ?? "-"} | ${e(finding.message)} |`,
+      );
+      for (const evidence of finding.evidence ?? [])
+        lines.push(
+          `| ${e(evidence.field)} | Oracle 预期 / 实际 | ${finding.stepNo ?? "-"} | ${e(JSON.stringify(evidence.expected))} / ${e(JSON.stringify(evidence.actual))} |`,
+        );
     }
   }
-  lines.push("");
-
-  lines.push("## 步骤");
-  lines.push("");
-  lines.push("| # | 动作 | 结果 | 幂等 | 降级 | tokens | trace | 摘要 | 耗时(ms) |");
-  lines.push("|---|---|---|---|---|---|---|---|---|");
-  for (const s of report.steps) {
-    const tokens = [
-      s.llmTokens !== undefined ? `llm:${s.llmTokens}` : "",
-      s.governanceTokens !== undefined ? `gov:${s.governanceTokens}` : "",
-    ]
-      .filter(Boolean)
-      .join(" / ");
-    const trace = s.traceId ?? "-";
+  lines.push(
+    "",
+    "## 步骤",
+    "",
+    "| # | 动作 | 结果 | 幂等 | 降级 | 分源用量 | trace | 摘要 | 耗时(ms) |",
+    "|---|---|---|---|---|---|---|---|---|",
+  );
+  for (const step of report.steps) {
+    const tokens = `${step.llmTokens === undefined ? "llm:unknown" : `llm:${step.llmTokens}`} / ${step.governanceTokens === undefined ? "gov:unknown" : `${step.tokenSources?.includes("synthetic") ? "synthetic" : "gov"}:${step.governanceTokens}`}`;
     lines.push(
-      `| ${s.stepNo} | ${s.actionId ?? "-"} | ${s.outcome} | ${s.replayed ? "是" : "否"} | ` +
-        `${s.degraded ? "是" : "否"} | ${tokens || "-"} | ${trace} | ` +
-        `\`${s.digest.slice(0, 8)}\` | ${s.elapsedMs} |`,
+      `| ${step.stepNo} | ${e(step.actionId)} | ${step.outcome} | ${step.replayed ? "是" : "否"} | ${step.degraded ? "是" : "否"} | ${tokens} | ${e(step.traceId)} | ${step.beforeHash.slice(0, 12)} → ${step.afterHash?.slice(0, 12) ?? "unknown"} | ${step.elapsedMs} |`,
     );
   }
-  lines.push("");
-
-  // 降级原因单列一节 —— 承诺 C4 的证据："模型不可用时游戏仍可玩，且**如实标注**"。
-  const degradedReasons = [
-    ...new Set(
-      report.steps.filter((s) => s.degraded && s.degradedReason).map((s) => s.degradedReason!),
-    ),
-  ];
-  if (degradedReasons.length > 0) {
-    lines.push("## 降级说明");
-    lines.push("");
-    for (const reason of degradedReasons) {
-      lines.push(`- ${reason}`);
-    }
-    lines.push("");
-  }
-
-  return lines.join("\n");
+  const reasons = [...new Set(report.steps.map((step) => step.degradedReason).filter(Boolean))];
+  if (reasons.length)
+    lines.push("", "## 降级说明", "", ...reasons.map((reason) => `- ${e(reason)}`));
+  return `${lines.join("\n")}\n`;
 }

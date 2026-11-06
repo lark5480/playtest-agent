@@ -54,93 +54,105 @@ export class ChessOracle implements Oracle {
     const { before, after, action, outcome } = params;
     const violations: OracleViolation[] = [];
 
-    if (after === null || action === null || outcome !== "applied") {
+    if (after === null || outcome !== "applied") {
       return violations;
     }
 
     const beforeFen = fenOf(before);
     const afterFen = fenOf(after);
-    if (!beforeFen || !afterFen) return violations;
+    if (!beforeFen || !afterFen)
+      return [
+        {
+          code: "CHS0-fen-unparseable",
+          severity: "fatal",
+          message: "状态缺少有效 FEN",
+          stepNo: null,
+        },
+      ];
 
     let beforePos;
     try {
       beforePos = parseFen(beforeFen);
       parseFen(afterFen);
-    } catch (error) {
+    } catch {
       violations.push({
         code: "CHS0-fen-unparseable",
         severity: "fatal",
-        message: `服务端返回的 FEN 无法解析：${error instanceof Error ? error.message : String(error)}`,
+        message: "服务端返回的 FEN 无法解析",
         stepNo: null,
       });
       return violations;
     }
 
-    const move = actionToMove(action);
-    if (!move) return violations;
-
-    // CHS1：动作必须存在于独立生成的合法着集合中
-    const legalMoves = generateLegalMoves(beforePos);
-    const expected = legalMoves.find((candidate) => moveId(candidate) === moveId(move));
-    if (!expected) {
-      violations.push({
-        code: "CHS1-illegal-move-accepted",
-        severity: "fatal",
-        message: `服务端接受了非法走子 ${moveId(move)}（该局面合法着：${legalMoves
-          .map(moveId)
-          .join(",")}）`,
-        stepNo: null,
-      });
-      return violations;
-    }
-
-    // CHS2：走子后的 FEN 必须与独立推演一致
-    const expectedPos = applyTo(beforePos, expected);
-    const expectedFen = positionToFen(expectedPos);
-    if (expectedFen !== afterFen) {
-      violations.push({
-        code: "CHS2-fen-mismatch",
-        severity: "fatal",
-        message: `走子后 FEN 与独立推演不一致：期望 ${expectedFen}，实际 ${afterFen}`,
-        stepNo: null,
-      });
-    }
-
-    // CHS3：moveCount 必须 +1
-    const beforeCount = Number(before.state.payload["moveCount"] ?? 0);
+    const afterPos = parseFen(afterFen);
     const afterCount = Number(after.state.payload["moveCount"] ?? 0);
-    if (afterCount !== beforeCount + 1) {
-      violations.push({
-        code: "CHS3-move-count-not-incremented",
-        severity: "fatal",
-        message: `moveCount 未正确递增：${beforeCount} → ${afterCount}（应 +1）`,
-        stepNo: null,
-      });
-    }
+    if (action !== null) {
+      const move = actionToMove(action);
+      if (!move) return violations;
 
-    // CHS4：回合交替
-    if (after.state.status === "playing") {
-      const expectedTurn = beforePos.turn === "w" ? "black" : "white";
-      if (after.state.turn !== expectedTurn) {
+      // CHS1：动作必须存在于独立生成的合法着集合中
+      const legalMoves = generateLegalMoves(beforePos);
+      const expected = legalMoves.find((candidate) => moveId(candidate) === moveId(move));
+      if (!expected) {
         violations.push({
-          code: "CHS4-turn-not-alternated",
+          code: "CHS1-illegal-move-accepted",
           severity: "fatal",
-          message: `回合未交替：走子前 ${colorName(beforePos.turn)}，走子后应为 "${expectedTurn}"，实际 "${after.state.turn}"`,
+          message: `服务端接受了非法走子 ${moveId(move)}（该局面合法着：${legalMoves
+            .map(moveId)
+            .join(",")}）`,
+          stepNo: null,
+        });
+        return violations;
+      }
+
+      // CHS2：走子后的 FEN 必须与独立推演一致
+      const expectedPos = applyTo(beforePos, expected);
+      const expectedFen = positionToFen(expectedPos);
+      if (expectedFen !== afterFen) {
+        violations.push({
+          code: "CHS2-fen-mismatch",
+          severity: "fatal",
+          message: `走子后 FEN 与独立推演不一致：期望 ${expectedFen}，实际 ${afterFen}`,
           stepNo: null,
         });
       }
-    } else if (after.state.turn !== null) {
-      violations.push({
-        code: "CHS4-finished-turn-not-null",
-        severity: "fatal",
-        message: `终局状态的 turn 应为 null，实际为 "${after.state.turn}"`,
-        stepNo: null,
-      });
+
+      // CHS3：moveCount 必须 +1
+      const beforeCount = Number(before.state.payload["moveCount"] ?? 0);
+      const afterCount = Number(after.state.payload["moveCount"] ?? 0);
+      if (afterCount !== beforeCount + 1) {
+        violations.push({
+          code: "CHS3-move-count-not-incremented",
+          severity: "fatal",
+          message: `moveCount 未正确递增：${beforeCount} → ${afterCount}（应 +1）`,
+          stepNo: null,
+        });
+      }
+
+      // CHS4：回合交替
+      if (after.state.status === "playing") {
+        const expectedTurn = beforePos.turn === "w" ? "black" : "white";
+        if (after.state.turn !== expectedTurn) {
+          violations.push({
+            code: "CHS4-turn-not-alternated",
+            severity: "fatal",
+            message: `回合未交替：走子前 ${colorName(beforePos.turn)}，走子后应为 "${expectedTurn}"，实际 "${after.state.turn}"`,
+            stepNo: null,
+          });
+        }
+      } else if (after.state.turn !== null) {
+        violations.push({
+          code: "CHS4-finished-turn-not-null",
+          severity: "fatal",
+          message: `终局状态的 turn 应为 null，实际为 "${after.state.turn}"`,
+          stepNo: null,
+        });
+      }
     }
 
-    // CHS5：终局结果与棋盘事实一致
+    // 无动作时也校验终局事实；将死胜方是当前 FEN 执子方的对手。
     if (after.state.status === "finished") {
-      violations.push(...this.checkResult(beforePos.turn, expectedPos, after));
+      violations.push(...this.checkResult(afterPos.turn === "w" ? "b" : "w", afterPos, after));
     }
 
     // CHS6：playing 不得无合法着
@@ -199,7 +211,6 @@ export class ChessOracle implements Oracle {
     }
 
     // CHS12：playing 时，服务端合法着集合必须与本地生成完全一致
-    const afterPos = parseFen(afterFen);
     const expectedLegal = generateLegalMoves(afterPos).map(moveId).sort();
     const actualLegal = after.state.legalActions.map((candidate) => candidate.id).sort();
     if (after.state.status === "playing") {

@@ -38,8 +38,9 @@ aiwarden 的 `AgentDagEngine` 是固定 10 节点的单次问答管线，本项�
 
 ### 2.4 决策确定性
 
-同 seed + 同局面 → 同动作。**策略不得引入真随机或时间依赖**。
-这条是"缺陷可复现"的地基：策略带采样，缺陷下次就复现不出来。
+确定性基线必须由 seed、观察序号与显式探索上下文决定，不引入真随机或时间依赖。
+LLM 不承诺相同 seed 的重新采样一致：**完整记录动作与公开状态，复现时不重新调用模型**。
+新运行身份可在 IO 层生成；身份不得影响策略决策。
 
 ### 2.5 依赖克制
 
@@ -96,8 +97,11 @@ npm run test:contract    # 契约测试（适配器 / 治理实现必过）
 npm run test:integration # 集成测试
 npm run test:integration:resume  # 进程级崩溃续跑（自带假服务）
 npm run playtest -- --scenario smoke   # 跑一局
-npm run scan -- --scenario smoke --seeds=1-50   # 多 seed 扫描
+npm run scan -- --scenario smoke --seeds=1-50   # 多 seed 扫描（默认基线，不收费）
+npm run demo                                   # 预置缺陷发现 → 新进程复现 → 健康对照
+npm run replay -- --file=reports/xxx.json --game-url=http://127.0.0.1:5173
 npm run report:html -- --file=reports/xxx.json  # 已有报告 → 自包含 HTML
+npm run report:diff -- --before=a.json --after=b.json
 npm run lint && npm run format:check
 npm run build
 ```
@@ -138,7 +142,8 @@ npm run build
 改动一律在 `dev` 上做 → 提 PR → 合入 `master`；**不直推 `master`、不 force-push**。
 
 **CI**：push / PR 到 `master` / `main` / `dev` 均触发；
-`verify`（lint / format / typecheck / 单测 / 契约 / **进程级续跑** / 构建）→ `e2e`（真实跑一局）
+`verify`（lint / format / typecheck / 单测 / 契约 / **进程级续跑** / **缺陷回放** / **预算** / 构建）
+→ Windows 恢复 job → `e2e`（真实跑一局）
 → `integration-games` / `integration-tongshi` / `e2e-tongshi`（强制真实服务），
 细节以 `.github/workflows/ci.yml` 为准。**CI 绿灯 = 可合并判据**。
 

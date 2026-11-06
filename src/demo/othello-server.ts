@@ -37,7 +37,14 @@ export interface OthelloStubServer {
   close(): Promise<void>;
 }
 
-export async function startOthelloStubServer(): Promise<OthelloStubServer> {
+export interface OthelloFixtureOptions {
+  readonly fault?: "missed-flip";
+  readonly faultAtStep?: number;
+}
+
+export async function startOthelloStubServer(
+  options: OthelloFixtureOptions = {},
+): Promise<OthelloStubServer> {
   const rooms = new Map<string, StubRoom>();
   let counter = 0;
 
@@ -150,7 +157,16 @@ export async function startOthelloStubServer(): Promise<OthelloStubServer> {
             return;
           }
 
+          const missed = getFlips(room.board, row, col, room.currentTurn)[0];
+          const previous = missed ? room.board[missed[0]]![missed[1]]! : EMPTY;
           room.board = applyMove(room.board, row, col, room.currentTurn);
+          if (
+            options.fault === "missed-flip" &&
+            room.moveCount === (options.faultAtStep ?? 5) &&
+            missed
+          ) {
+            room.board[missed[0]]![missed[1]] = previous;
+          }
           room.moveCount += 1;
           room.updatedAt = nextTimestamp(room.updatedAt);
 

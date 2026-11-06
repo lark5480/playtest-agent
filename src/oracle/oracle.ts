@@ -26,6 +26,11 @@ export interface OracleViolation {
   readonly message: string;
   /** 关联的步骤序号；无关联时为 null。 */
   readonly stepNo: number | null;
+  readonly evidence?: readonly {
+    readonly field: string;
+    readonly expected: unknown;
+    readonly actual: unknown;
+  }[];
 }
 
 /**

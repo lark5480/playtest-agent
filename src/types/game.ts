@@ -40,6 +40,35 @@ export interface Action {
   readonly payload: Readonly<Record<string, unknown>>;
 }
 
+/** 本轮仅实现黑白棋的规则事件；其他游戏明确标记不适用。 */
+export type ExplorationEvent = "corner" | "pass" | "terminal";
+
+export type ExplorationEventMetric =
+  | { readonly status: "applicable"; readonly count: number; readonly firstStep: number | null }
+  | { readonly status: "not-applicable" };
+
+export interface ExplorationMetrics {
+  readonly uniqueStates: number;
+  readonly events: Readonly<Record<ExplorationEvent, ExplorationEventMetric>>;
+}
+
+/** 仅由已记录步骤派生，不含凭证、原始错误或模型自评。 */
+export interface ExplorationContext {
+  readonly target: string;
+  readonly visited: {
+    readonly uniqueStates: number;
+    readonly recent: readonly string[];
+  };
+  readonly events: ExplorationMetrics["events"];
+  readonly recent: readonly {
+    readonly stepNo: number;
+    readonly actionId: string | null;
+    readonly outcome: "applied" | "replayed" | "rejected" | "failed";
+    readonly stateChanged: boolean | null;
+    readonly events: readonly ExplorationEvent[];
+  }[];
+}
+
 /**
  * 一次观察：Agent 在决策前看到的局面。
  */

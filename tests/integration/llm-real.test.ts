@@ -19,7 +19,7 @@ import { InMemoryGovernanceClient } from "../../src/governance/client.js";
 import { clientFromEnv } from "../../src/llm/openai-client.js";
 import { GenericOracle } from "../../src/oracle/generic.js";
 import { LlmStrategy } from "../../src/strategy/llm.js";
-import { startOthelloStubServer } from "../helpers/othello-stub-server.js";
+import { startOthelloStubServer } from "../../src/demo/othello-server.js";
 
 const client = clientFromEnv();
 const configured = client !== null;

@@ -29,8 +29,48 @@ test("finished 状态判为终局", () => {
   assert.equal(isTerminal(state({ status: "finished" })), true);
 });
 
-test("无合法动作但未 finished 判为终局（死局）", () => {
-  assert.equal(isTerminal(state({ legalActions: [] })), true);
+test("无合法动作但未 finished 是停滞，不是游戏终局", () => {
+  assert.equal(isTerminal(state({ legalActions: [] })), false);
+});
+
+test("planNextStep 拒绝同 ID 异 payload", () => {
+  assert.throws(
+    () =>
+      planNextStep({
+        context,
+        stepNo: 0,
+        observation: observation(state()),
+        decision: {
+          action: { id: "m1", payload: { row: 7, col: 7 } },
+          reason: "x",
+          degraded: false,
+        },
+      }),
+    /非法动作/,
+  );
+});
+
+test("planNextStep 拒绝非终局 null 动作", () => {
+  assert.throws(
+    () =>
+      planNextStep({
+        context,
+        stepNo: 0,
+        observation: observation(state()),
+        decision: { action: null, reason: "x", degraded: false },
+      }),
+    /空动作/,
+  );
+});
+
+test("planNextStep 接受键序不同的同一 payload", () => {
+  const plan = planNextStep({
+    context,
+    stepNo: 0,
+    observation: observation(state()),
+    decision: { action: { id: "m1", payload: { col: 1, row: 1 } }, reason: "x", degraded: false },
+  });
+  assert.equal(plan.terminal, false);
 });
 
 test("有合法动作且未 finished 不判终局", () => {
