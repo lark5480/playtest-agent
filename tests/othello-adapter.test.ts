@@ -22,6 +22,11 @@ test("act：后续观察不能刷新旧局面的条件写版本", async () => {
   await client.observe({ state: first.observation!.state, token });
   const stale = await client.act({ state, token, action });
   assert.equal(stale.ok, false);
+  assert.match(
+    stale.error ?? "",
+    /409|conflict/i,
+    "并发冲突必须保留 HTTP 状态分类，不能退化成泛化失败",
+  );
   const current = await client.observe({ state, token });
   assert.equal(current.state.payload["moveCount"], 1);
 });

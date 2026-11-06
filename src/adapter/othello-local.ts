@@ -17,6 +17,7 @@
 import type { Action, GameState, Observation } from "../types/game.js";
 
 import type { GameAdapter } from "./game-adapter.js";
+import { AdapterHttpError, actionErrorMessage } from "./http-error.js";
 
 /** othello 的棋盘常量（0 空 / 1 黑 / 2 白）。 */
 const EMPTY = 0;
@@ -185,8 +186,8 @@ export class OthelloLocalAdapter implements GameAdapter {
           at: Date.now(),
         },
       };
-    } catch {
-      return { ok: false, error: "othello 动作失败（网络、拒绝或响应无效）" };
+    } catch (error) {
+      return { ok: false, error: actionErrorMessage("othello", error) };
     }
   }
 
@@ -397,11 +398,12 @@ export class OthelloLocalAdapter implements GameAdapter {
       });
       const text = await res.text();
       if (!res.ok) {
-        throw new Error(`othello HTTP ${res.status}`);
+        throw new AdapterHttpError("othello", res.status);
       }
       return text ? (JSON.parse(text) as T) : ({} as T);
-    } catch {
-      throw new Error("othello 请求失败（网络、HTTP 或响应无效）");
+    } catch (error) {
+      if (error instanceof AdapterHttpError) throw error;
+      throw new Error("othello 请求失败（网络或响应无效）");
     } finally {
       clearTimeout(timer);
     }

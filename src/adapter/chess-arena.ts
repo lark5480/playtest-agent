@@ -33,6 +33,7 @@ import { hashOf } from "../core/state-hash.js";
 import type { Action, GameState, Observation } from "../types/game.js";
 
 import type { GameAdapter } from "./game-adapter.js";
+import { AdapterHttpError, actionErrorMessage } from "./http-error.js";
 
 type ArenaColor = "white" | "black";
 type ArenaStatus = "waiting" | "playing" | "finished";
@@ -203,8 +204,8 @@ export class ChessArenaAdapter implements GameAdapter {
           at: Date.now(),
         },
       };
-    } catch {
-      return { ok: false, error: "chess 动作失败（网络、拒绝或响应无效）" };
+    } catch (error) {
+      return { ok: false, error: actionErrorMessage("chess", error) };
     }
   }
 
@@ -393,7 +394,7 @@ export class ChessArenaAdapter implements GameAdapter {
       try {
         return await this.request<ArenaMoveResponse>("POST", `/api/rooms/${code}/move`, body);
       } catch (error) {
-        const rateLimited = error instanceof HttpError && error.status === 429;
+        const rateLimited = error instanceof AdapterHttpError && error.status === 429;
         if (!rateLimited || attempt >= 1) throw error;
         await new Promise((resolve) => setTimeout(resolve, this.rateLimitWaitMs));
       }
@@ -413,24 +414,14 @@ export class ChessArenaAdapter implements GameAdapter {
       });
       const text = await res.text();
       if (!res.ok) {
-        throw new HttpError(res.status, `chess HTTP ${res.status}`);
+        throw new AdapterHttpError("chess", res.status);
       }
       return text ? (JSON.parse(text) as T) : ({} as T);
     } catch (error) {
-      if (error instanceof HttpError) throw error;
+      if (error instanceof AdapterHttpError) throw error;
       throw new Error("chess 请求失败（网络或响应无效）");
     } finally {
       clearTimeout(timer);
     }
-  }
-}
-
-class HttpError extends Error {
-  public readonly status: number;
-
-  public constructor(status: number, message: string) {
-    super(message);
-    this.name = "HttpError";
-    this.status = status;
   }
 }
