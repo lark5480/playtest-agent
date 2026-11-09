@@ -6,6 +6,21 @@
  * 这里定义的是"从外部看治理能力长什么样"，与 aiwarden 的内部模型解耦。
  */
 
+import type { TokenUnavailableReasonCode } from "./step.js";
+
+/**
+ * 治理整体降级原因码（闭合枚举）。
+ */
+export type GovernanceDegradedReasonCode =
+  /** 按要求强制使用内存替身。 */
+  | "forced-in-memory"
+  /** aiwarden 探活失败（网络不可达 / 超时）。 */
+  | "unreachable"
+  /** aiwarden 探活返回 HTTP 错误。 */
+  | "http-error"
+  /** 未归类的降级原因。 */
+  | "unknown";
+
 /**
  * 一次治理调用结果。
  */
@@ -20,8 +35,8 @@ export interface GovernanceResult {
   readonly tokens?: number;
   /** token 数的来源口径。 */
   readonly tokenSource?: "model-usage" | "governance-usage" | "synthetic" | "unavailable";
-  /** 未取得成本时的显式原因。 */
-  readonly tokensUnavailableReason?: string;
+  /** 未取得成本时的显式原因码。 */
+  readonly tokensUnavailableReason?: TokenUnavailableReasonCode;
   /** 治理拒绝原因（被拒绝时）。 */
   readonly deniedReason?: string;
 }
@@ -38,8 +53,8 @@ export interface GovernanceUsageEntry {
 export interface GovernanceUsage {
   readonly source: "governance-usage" | "synthetic" | "unavailable";
   readonly byStep: readonly GovernanceUsageEntry[];
-  /** source 为 unavailable 时必填，说明为什么拿不到。 */
-  readonly unavailableReason?: string;
+  /** source 为 unavailable 时必填，说明为什么拿不到（只允许原因码）。 */
+  readonly unavailableReason?: TokenUnavailableReasonCode;
 }
 
 /**

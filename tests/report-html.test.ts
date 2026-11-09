@@ -78,7 +78,7 @@ test("chess只展示真实FEN、SAN、历史与结果，不伪造棋盘", () => 
 test("warning、截断、无发现、缺usage、降级都有明确展示", () => {
   const report = buildReportJson(
     params({
-      steps: [step({ degraded: true, degradedReason: "SECRET_MODEL_ERROR" })],
+      steps: [step({ degraded: true, degradedReason: "timeout" })],
       findings: [{ code: "W1", message: "SECRET_RAW_RESPONSE", severity: "warning", stepNo: 0 }],
     }),
   );
@@ -87,7 +87,7 @@ test("warning、截断、无发现、缺usage、降级都有明确展示", () =>
   assert.match(html, /step-limit/);
   assert.match(html, /severity-warning/);
   assert.match(html, /unknown/);
-  assert.match(html, /已降级到确定性基线/);
+  assert.match(html, /模型调用超时/);
   assert.ok(!html.includes("SECRET"));
   assert.match(renderReportHtml(buildReportJson(params())), /无 fatal 发现/);
 });

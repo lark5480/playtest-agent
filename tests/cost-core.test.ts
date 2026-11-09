@@ -52,12 +52,12 @@ test("查询整体不可用：缺成本的步标 unavailable 并写原因，已�
   const usage: GovernanceUsage = {
     source: "unavailable",
     byStep: [],
-    unavailableReason: "aiwarden 不可达",
+    unavailableReason: "usage-source-unavailable",
   };
   const merged = mergeUsageIntoSteps([step(0), step(1, 10)], usage);
   assert.equal(merged[0]?.governance.tokens, undefined);
   assert.equal(merged[0]?.governance.tokenSource, "unavailable");
-  assert.equal(merged[0]?.governance.tokensUnavailableReason, "aiwarden 不可达");
+  assert.equal(merged[0]?.governance.tokensUnavailableReason, "usage-source-unavailable");
   assert.equal(merged[1]?.governance.tokens, 10);
   assert.equal(merged[1]?.governance.tokenSource, undefined);
 });
@@ -71,5 +71,5 @@ test("部分步缺失：只标缺失步，不把整局一概而论", () => {
   assert.equal(merged[0]?.governance.tokens, 4);
   assert.equal(merged[1]?.governance.tokens, undefined);
   assert.equal(merged[1]?.governance.tokenSource, "unavailable");
-  assert.equal(merged[1]?.governance.tokensUnavailableReason, "该步无治理侧用量记录");
+  assert.equal(merged[1]?.governance.tokensUnavailableReason, "no-step-record");
 });

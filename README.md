@@ -38,6 +38,20 @@
 
 ---
 
+## 前置仓库（本地联调可选）
+
+| 仓库             | 地址                                         | 用途                             |
+| ---------------- | -------------------------------------------- | -------------------------------- |
+| `othello-online` | <https://github.com/lark5480/othello-online> | 被测游戏 A；自带本地 mock API    |
+| `chess-arena`    | <https://github.com/lark5480/chess-arena>    | 被测游戏 B；Next.js 内存房间 API |
+| `tongshi-ju`     | <https://github.com/lark5480/tongshi-ju>     | 跨仓库集成与 e2e                 |
+| `aiwarden`       | 需自备（本项目零改动，仅通过 HTTP 消费）     | 真实治理链路（可选）             |
+
+本地按兄弟目录检出（例如 `../othello-online`），下文命令的相对路径以此为前提；
+CI 会自行拉取前三个仓库。**只跑 `npm run demo` 不需要任何前置仓库。**
+
+---
+
 ## 快速开始
 
 ```bash
@@ -254,8 +268,8 @@ chess 侧 CHS12–CHS15（合法集、FEN 历史连续性、子力不足、resul
 
 **本地验证（2026-11-04 快照）**
 
-- 单元 **131** / 契约 **23** / 集成 **21**（othello 起来时 4 条通过；
-  其余依赖未起按规则显式跳过）
+- 单元 **131** / 契约 **23** / 集成 **21**（**数字仅代表 2026-11-04 当时**；
+  othello 起来时 4 条通过，其余依赖未起按规则显式跳过；当前数量以命令输出为准）
 - `lint` / `format:check` / `typecheck` / `build` 全绿
 - 当轮代码对应的 CI green run 为 `41801302392`；当前规模以「测试结果」节的命令输出为准
 
@@ -332,9 +346,9 @@ CI 侧相关 job：
 
 | job                    | 内容                                                                                                                        | 超时    |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------- |
-| `verify`               | lint / format / typecheck / 单测 / 契约 / **进程级续跑** / **缺陷回放** / **预算** / 构建                                   | 未设    |
+| `verify`               | lint / format / typecheck / 单测 / 契约 / **进程级续跑** / **缺陷回放** / **预算** / 构建                                   | 10 分钟 |
 | `windows-recovery`     | Windows 上的进程级续跑 / 缺陷回放 / 预算（与 verify 并行）                                                                  | 10 分钟 |
-| `e2e`                  | 拉 othello-online → 起服 → `npm run playtest -- --scenario smoke` → 上传 `playtest-report`                                  | 未设    |
+| `e2e`                  | 拉 othello-online → 起服 → `npm run playtest -- --scenario smoke` → 上传 `playtest-report`                                  | 10 分钟 |
 | `integration-games`    | 拉 othello-online / chess-arena → 构建 → 5173 / 3000 起服 → `PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:games` | 10 分钟 |
 | `integration-tongshi`  | 拉 tongshi-ju → 构建 → 3100 起服 → `PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:tongshi`                        | 15 分钟 |
 | `e2e-tongshi`          | 拉 tongshi-ju → 构建 `.next-e2e` → 由其 Playwright `webServer` 起服 → 跑自带套件（actor 侧不引 Playwright 依赖）            | 15 分钟 |
@@ -342,9 +356,14 @@ CI 侧相关 job：
 
 aiwarden 的治理链路需要 Java 21 + Maven + Docker（测试只需 PG / Redis / Kafka；MinIO 是 aiwarden 完整 compose 的一部分，治理契约用不到），但单轮约 2 分钟、叠加镜像拉取抖动，挂到每次 push 的默认流水线既不划算也不稳定，**不在默认 CI 里假装通过**：job 不配置 URL 就不运行（Actions 里显示 Skipped），配置了就必须真跑、失败即红。运行时会设 `AIWARDEN_ADMIN_USER_ID=1`，因为 `/api/v1/admin/usage` 要求数值主体。
 
+CI 另在每周一 03:00 UTC 定时巡检上游仓库漂移（上游 push 不会触发本仓流水线）；定时运行不改变 push / PR 的必需检查口径。
+
 另有一个独立 workflow（`.github/workflows/aiwarden-nightly.yml`）：夜间 cron + 手动 `workflow_dispatch` 触发，不挂在 push / PR 主流程上。它起的是真实 aiwarden 服务（真实 PG / Redis / Kafka，覆盖幂等 / 限流 / 审计链路；模型侧是确定性替身，零 API Key、零云端审批），但覆盖范围有限：只验证治理契约（6 实跑 + 3 显式不适用）与 usage 查询，不验证真实模型行为，也不覆盖依赖对象存储的路径（MinIO 未启动）。
 
 ### 第二游戏适配：chess-arena（2026-11-04 实跑）
+
+> **时点记录（v1 报告口径）**：本节输出来自 v1。2026-11-06 起报告 v2 只有正常终局才记
+> `passed`；步数截断记 `incomplete`。下面的输出原文保留作时点证据。
 
 ```console
 $ npm run playtest '--' --scenario chess
@@ -362,9 +381,10 @@ $ node --import tsx --test tests/integration/chess-arena.test.ts
 ```
 
 这是「通用测试工具」定位的证据：同一个驱动循环、治理与报告，只换适配器与游戏特异 Oracle。
-本次 60 步止于场景上限（`chess-arena` 走子接口按 IP 限流 60 次/分钟）；报告状态 `passed`
-只代表「末步生效且无断言失败」，不代表整局终局。连续跑多局撞上限时，适配器会等待一个
-滑动窗口（约 61 秒）后重试一次，不把 429 当成游戏缺陷。
+本次 60 步止于场景上限（`chess-arena` 走子接口按 IP 限流 60 次/分钟）。**v1 曾把这种截断
+记为 `passed`，只代表「末步生效且无断言失败」；当前 v2 会把截断标为 `incomplete`，只有
+正常终局才是 `passed`**（见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §4.1）。连续跑
+多局撞上限时，适配器会等待一个滑动窗口（约 61 秒）后重试一次，不把 429 当成游戏缺陷。
 
 **历史型和棋由本地独立判定**：适配器在状态 payload 里维护 `fenHistory`，用
 `core/chess-rules.ts` 的 `analyzeHistory` 重算「三次重复 / 50 步」；服务端仍报 playing 时
@@ -416,14 +436,14 @@ $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm ru
 
 ### 仍然存在的边界（如实记录）
 
-| 边界                                | 原因                                                         | 处置                                                                              |
-| ----------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| aiwarden 侧**没有游戏动作工具**     | 实测注册的是 `assign_ticket` / `create_ticket`               | 用 `create_ticket` 作替身验证整条管道；**不改 aiwarden**                          |
-| 单次工具调用**不返回 traceId**      | `ToolInvokeResponse` 无该字段（traceId 属 session 层）       | 契约该条标「不适用」并注明原因，而非删断言                                        |
-| 真实 aiwarden **usage** 是异步落库  | Outbox → Kafka → `t_llm_call_log`；**未配预算时按设计记 0**  | 按 session + run `startedAt` 过滤，轮询到「期望步集合」；仍无记录标 `unavailable` |
-| 真实 aiwarden **续跑**              | 2026-11-05 已实跑 30 步，`replayed 1`、退出 0                | 必须同 tenant / session / businessKey；检查点保留 token                           |
-| 真实模型                            | 2026-11-05 已实跑 5 步（LongCat-2.5，0 降级）；60 步整局未跑 | 无 key 时显式降级；`reasoning_content` 已兼容                                     |
-| chess-arena 走子**限流 60 次/分钟** | 游戏侧按 IP 的固定窗口限流                                   | chess 场景上限设为 60 步；不绕过限流、不改被测仓库                                |
+| 边界                                | 原因                                                                                    | 处置                                                                              |
+| ----------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| aiwarden 侧**没有游戏动作工具**     | 实测注册的是 `assign_ticket` / `create_ticket`                                          | 用 `create_ticket` 作替身验证整条管道；**不改 aiwarden**                          |
+| 单次工具调用**不返回 traceId**      | `ToolInvokeResponse` 无该字段（traceId 属 session 层）                                  | 契约该条标「不适用」并注明原因，而非删断言                                        |
+| 真实 aiwarden **usage** 是异步落库  | Outbox → Kafka → `t_llm_call_log`；**未配预算时按设计记 0**                             | 按 session + run `startedAt` 过滤，轮询到「期望步集合」；仍无记录标 `unavailable` |
+| 真实 aiwarden **续跑**              | 2026-11-05 已实跑 30 步，`replayed 1`、退出 0                                           | 必须同 tenant / session / businessKey；检查点保留 token                           |
+| 真实模型                            | 2026-11-05 已实跑 5 步（0 降级）；60 步整局不做（裁决 36）；2 seeds×10 步对照已验证链路 | 无 key 时显式降级；`reasoning_content` 已兼容                                     |
+| chess-arena 走子**限流 60 次/分钟** | 游戏侧按 IP 的固定窗口限流                                                              | chess 场景上限设为 60 步；不绕过限流、不改被测仓库                                |
 
 ### 关于"发现真实缺陷"的诚实结论
 
@@ -447,7 +467,7 @@ $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm ru
 
 ## 项目状态
 
-**当前阶段：Stage 0–6 + P0–P2 收口**（路线见 [`docs/PRD.md`](docs/PRD.md) §14）。
+**当前阶段：维护期**（Stage 0–6 + P0–P2 已收口，路线见 [`docs/PRD.md`](docs/PRD.md) §14）。
 
 已交付：
 
@@ -463,7 +483,7 @@ $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm ru
 - 模型预算：预扣与 in-flight 持久化；CLI 进程被终止后恢复不退款、不重发
 - 扫描：`npm run scan` 输出可追溯报告与成对可比窗口；发现项标注「待人工复核」
 - 真实链路补跑（2026-11-05）：真实模型 5 步 0 降级、aiwarden 契约+usage 7 通过 + 3 不适用、aiwarden 续跑 30 步 `replayed 1`
-- 测试：单元 270 / 契约 35 / 集成 25（本地无真实服务时按规则跳过 8 条）；
+- 测试：单元 272 / 契约 35 / 集成 25（本地无真实服务时按规则跳过 8 条）；
   `lint` / `format:check` / `typecheck` / `build` 全绿
 - CI：`master` 最新一轮全绿（2026-11-06）；job 清单见上文表格
 
@@ -471,7 +491,8 @@ $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm ru
   seed 2 的探索策略在第 5 步触达角点，基线未触达；每局 10 步约 1.7 万已知 tokens
 - 该样本只证明对照链路与指标可用，**不足以宣称普遍优势**；预算硬上限内完成
 
-待做（路线图后续项）：MCP 通道、**真实模型 60 步整局实跑**（历史上只跑了 5 步）。
+**收尾裁定（2026-11-09）**：MCP 通道与真实模型 60 步整局实跑**明确不做**，
+理由与影响面见裁决 36。项目进入维护期，只做 CI 与必要修复。
 
 ---
 
@@ -489,7 +510,7 @@ $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm ru
 
 ## 设计要点
 
-**aiwarden 零改动。** 本项目只通过它既有的 HTTP / MCP 边界**消费**治理能力
+**aiwarden 零改动。** 本项目只通过它既有的 HTTP 边界**消费**治理能力
 （幂等键 / 版本 CAS / 租约独占 / 成本归因 / 检查点续跑），不去改它。
 理由与证据见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §4。
 

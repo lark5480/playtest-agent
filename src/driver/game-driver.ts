@@ -22,7 +22,13 @@ import type { GovernanceClient } from "../types/governance.js";
 import type { Action, GameState, Observation } from "../types/game.js";
 import type { Oracle, OracleViolation } from "../oracle/oracle.js";
 import type { Strategy } from "../strategy/strategy.js";
-import type { StepOutcome, StepRecord, TokenSource } from "../types/step.js";
+import type {
+  StepErrorCode,
+  StepOutcome,
+  StepRecord,
+  TokenSource,
+  TokenUnavailableReasonCode,
+} from "../types/step.js";
 import type { Checkpoint, CheckpointStore, PendingStep } from "./checkpoint.js";
 
 /**
@@ -104,13 +110,13 @@ export class ResumeDivergedError extends Error {
 interface ExecutionResult {
   readonly outcome: StepOutcome;
   readonly observationAfter: Observation | null;
-  readonly error?: string;
+  readonly error?: StepErrorCode;
   readonly errorCategory?: ErrorCategory;
   readonly replayed: boolean;
   readonly traceId?: string;
   readonly tokens?: number;
   readonly tokenSource?: TokenSource;
-  readonly tokensUnavailableReason?: string;
+  readonly tokensUnavailableReason?: TokenUnavailableReasonCode;
   readonly elapsedMs: number;
   readonly findings: readonly Finding[];
 }
@@ -546,8 +552,10 @@ async function executeAction(params: {
   let traceId: string | undefined;
   let tokens: number | undefined;
   let tokenSource: TokenSource | undefined;
-  let tokensUnavailableReason: string | undefined;
+  let tokensUnavailableReason: TokenUnavailableReasonCode | undefined;
   let errorCategory: ErrorCategory = "governance";
+  // 失败时落到哪个闭合原因码；原始错误文本不入报告。
+  let failureCode: StepErrorCode = "governance-error";
 
   try {
     const result = await params.governance.invoke({
@@ -557,11 +565,13 @@ async function executeAction(params: {
       action: params.action.payload,
       perform: async () => {
         errorCategory = "game";
+        failureCode = "game-request-failed";
         const acted = await params.adapter.act({
           state: params.observation.state,
           token: params.token,
           action: params.action,
         });
+        failureCode = "game-action-unconfirmed";
         if (!acted.ok || !acted.observation) throw new Error("动作及后置状态未确认");
         observationAfter = { ...acted.observation, seq: params.stepNo + 1 };
       },
@@ -575,8 +585,12 @@ async function executeAction(params: {
 
     if (replayed) {
       errorCategory = "game";
+      failureCode = "game-request-failed";
       const observed = await observeAfterReplay(params);
-      if (!observed) throw new Error("治理重放但后置状态无法观察");
+      if (!observed) {
+        failureCode = "replay-unobservable";
+        throw new Error("治理重放但后置状态无法观察");
+      }
       const currentHash = stateDigestOf(params.adapter, observed.state);
       const decision = decideResumeAction({
         currentHash,
@@ -584,18 +598,25 @@ async function executeAction(params: {
         ...(params.expectedAfterHash ? { expectedAfterHash: params.expectedAfterHash } : {}),
       });
       if (decision === "diverged") {
+        failureCode = "replay-diverged";
         errorCategory = "state";
         throw new Error("重放状态发散");
       }
       if (decision === "replayed") observationAfter = observed;
       if (decision === "redo") {
-        if (!params.adapter.supportsConditionalAct) throw new Error("适配器不支持安全条件重试");
+        if (!params.adapter.supportsConditionalAct) {
+          failureCode = "conditional-retry-unsupported";
+          throw new Error("适配器不支持安全条件重试");
+        }
         const repaired = await params.adapter.act({
           state: observed.state,
           token: params.token,
           action: params.action,
         });
-        if (!repaired.ok || !repaired.observation) throw new Error("重放补偿未确认");
+        if (!repaired.ok || !repaired.observation) {
+          failureCode = "replay-compensation-failed";
+          throw new Error("重放补偿未确认");
+        }
         observationAfter = { ...repaired.observation, seq: params.stepNo + 1 };
         findings.push({
           code: "G7-governance-replayed-before-game-state",
@@ -618,7 +639,10 @@ async function executeAction(params: {
       }
     }
 
-    if (!observationAfter) throw new Error("缺少后置状态");
+    if (!observationAfter) {
+      failureCode = "missing-post-state";
+      throw new Error("缺少后置状态");
+    }
     return {
       outcome: replayed ? "replayed" : "applied",
       observationAfter,
@@ -634,7 +658,7 @@ async function executeAction(params: {
     return {
       outcome: "failed",
       observationAfter,
-      error: "执行未确认成功；已停止并保留原动作意图。",
+      error: failureCode,
       errorCategory,
       replayed,
       ...(traceId ? { traceId } : {}),

@@ -12,15 +12,15 @@
 
 import { AiwardenHttpClient } from "./aiwarden-client.js";
 import { InMemoryGovernanceClient } from "./client.js";
-import type { GovernanceClient } from "../types/governance.js";
+import type { GovernanceClient, GovernanceDegradedReasonCode } from "../types/governance.js";
 
 export interface GovernanceSetup {
   /** 实际使用的治理客户端。 */
   readonly client: GovernanceClient;
   /** 是否走了降级。 */
   readonly degraded: boolean;
-  /** 降级原因（降级时非空）。 */
-  readonly reason?: string;
+  /** 降级原因码（降级时非空）。 */
+  readonly reason?: GovernanceDegradedReasonCode;
 }
 
 /**
@@ -37,11 +37,12 @@ export async function setupGovernance(options: {
     return {
       client: new InMemoryGovernanceClient(),
       degraded: true,
-      reason: "按要求强制使用内存治理替身（--governance=in-memory）",
+      reason: "forced-in-memory",
     };
   }
 
   const client = new AiwardenHttpClient(options.baseUrl ? { baseUrl: options.baseUrl } : {});
+  let httpError = false;
 
   try {
     // 探活：列出可用工具（GET /api/v1/agent/tools）。
@@ -62,6 +63,7 @@ export async function setupGovernance(options: {
         },
       );
       if (!res.ok) {
+        httpError = true;
         throw new Error(`HTTP ${res.status}`);
       }
     } finally {
@@ -69,11 +71,11 @@ export async function setupGovernance(options: {
     }
 
     return { client, degraded: false };
-  } catch (error) {
+  } catch {
     return {
       client: new InMemoryGovernanceClient(),
       degraded: true,
-      reason: `aiwarden 不可达（${error instanceof Error ? error.message : String(error)}），已降级到内存治理替身`,
+      reason: httpError ? "http-error" : "unreachable",
     };
   }
 }

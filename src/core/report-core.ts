@@ -2,7 +2,16 @@
 import type { ModelBudgetState } from "../types/budget.js";
 import type { Action, GameState } from "../types/game.js";
 import type { ErrorCategory, PublicSnapshot, RunMetadata, StopReason } from "../types/run.js";
-import type { StepOutcome, StepRecord, TokenSource } from "../types/step.js";
+import type {
+  DegradedReasonCode,
+  StepErrorCode,
+  StepOutcome,
+  StepRecord,
+  TokenSource,
+  TokenUnavailableReasonCode,
+} from "../types/step.js";
+import type { GovernanceDegradedReasonCode } from "../types/governance.js";
+import { degradedReasonLabel, governanceDegradedReasonLabel } from "./evidence.js";
 import { parseReportJson, publicAction, publicSnapshot, snapshotHash } from "./recording.js";
 
 /** 三种不同单位绝不相加。null 表示没有完整可归因用量，而非零消耗。 */
@@ -36,16 +45,16 @@ export interface StepJson {
   readonly afterHash: string | null;
   readonly outcome: StepOutcome;
   readonly degraded: boolean;
-  readonly degradedReason?: string;
+  readonly degradedReason?: DegradedReasonCode;
   readonly replayed: boolean;
   readonly digest: string;
   readonly elapsedMs: number;
-  readonly error?: string;
+  readonly error?: StepErrorCode;
   readonly traceId?: string;
   readonly llmTokens?: number;
   readonly governanceTokens?: number;
   readonly tokenSources?: readonly TokenSource[];
-  readonly tokensUnavailableReason?: string;
+  readonly tokensUnavailableReason?: TokenUnavailableReasonCode;
 }
 export interface ReportJson {
   readonly schemaVersion: 2;
@@ -69,7 +78,7 @@ export interface ReportJson {
   readonly replayedSteps: number;
   readonly failedSteps: number;
   readonly governanceSource: string;
-  readonly governanceDegradedReason?: string;
+  readonly governanceDegradedReason?: GovernanceDegradedReasonCode;
   readonly usage: ReportUsage;
   readonly findings: readonly Finding[];
   readonly steps: readonly StepJson[];
@@ -201,7 +210,7 @@ export function buildReportJson(params: {
   readonly steps: readonly StepRecord[];
   readonly findings: readonly Finding[];
   readonly governanceSource?: string;
-  readonly governanceDegradedReason?: string;
+  readonly governanceDegradedReason?: GovernanceDegradedReasonCode;
 }): ReportJson {
   const game = params.metadata.game;
   const governanceSource = params.governanceSource ?? "unknown";
@@ -224,17 +233,17 @@ export function buildReportJson(params: {
       afterHash: after ? snapshotHash(after) : null,
       outcome: step.outcome,
       degraded: step.degraded,
-      ...(step.degraded ? { degradedReason: "模型不可用或输出无效，已降级到确定性基线" } : {}),
+      ...(step.degraded ? { degradedReason: step.degradedReason ?? "unknown" } : {}),
       replayed: step.governance.replayed,
       digest: step.fingerprint.digest,
       elapsedMs: step.elapsedMs,
-      ...(step.error ? { error: "执行失败；原始错误文本已省略" } : {}),
+      ...(step.error ? { error: step.error } : {}),
       ...(step.governance.traceId ? { traceId: step.governance.traceId } : {}),
       ...(step.llmTokens !== undefined ? { llmTokens: step.llmTokens } : {}),
       ...(step.governance.tokens !== undefined ? { governanceTokens: step.governance.tokens } : {}),
       ...(tokenSources.length ? { tokenSources: [...new Set(tokenSources)].sort() } : {}),
       ...(step.governance.tokensUnavailableReason
-        ? { tokensUnavailableReason: "未取得完整用量证据" }
+        ? { tokensUnavailableReason: step.governance.tokensUnavailableReason }
         : {}),
     };
   });
@@ -266,7 +275,7 @@ export function buildReportJson(params: {
       .length,
     governanceSource,
     ...(params.governanceDegradedReason
-      ? { governanceDegradedReason: "治理不可用或证据不完整，已显式降级" }
+      ? { governanceDegradedReason: params.governanceDegradedReason }
       : {}),
     usage: summarizeUsage(steps, params.budget),
   });
@@ -307,7 +316,10 @@ export function renderReportMarkdown(input: ReportJson): string {
     "",
   ];
   if (report.governanceDegradedReason)
-    lines.push(`> 治理降级：${e(report.governanceDegradedReason)}`, "");
+    lines.push(
+      `> 治理降级：${e(governanceDegradedReasonLabel(report.governanceDegradedReason))}`,
+      "",
+    );
   lines.push(
     "## 治理证据",
     "",
@@ -349,13 +361,28 @@ export function renderReportMarkdown(input: ReportJson): string {
     "|---|---|---|---|---|---|---|---|---|",
   );
   for (const step of report.steps) {
-    const tokens = `${step.llmTokens === undefined ? "llm:unknown" : `llm:${step.llmTokens}`} / ${step.governanceTokens === undefined ? "gov:unknown" : `${step.tokenSources?.includes("synthetic") ? "synthetic" : "gov"}:${step.governanceTokens}`}`;
+    const gov =
+      step.governanceTokens === undefined
+        ? `gov:unknown${step.tokensUnavailableReason ? `（${step.tokensUnavailableReason}）` : ""}`
+        : `${step.tokenSources?.includes("synthetic") ? "synthetic" : "gov"}:${step.governanceTokens}`;
+    const tokens = `${step.llmTokens === undefined ? "llm:unknown" : `llm:${step.llmTokens}`} / ${gov}`;
     lines.push(
-      `| ${step.stepNo} | ${e(step.actionId)} | ${step.outcome} | ${step.replayed ? "是" : "否"} | ${step.degraded ? "是" : "否"} | ${tokens} | ${e(step.traceId)} | ${step.beforeHash.slice(0, 12)} → ${step.afterHash?.slice(0, 12) ?? "unknown"} | ${step.elapsedMs} |`,
+      `| ${step.stepNo} | ${e(step.actionId)} | ${step.outcome}${step.error ? `（${step.error}）` : ""} | ${step.replayed ? "是" : "否"} | ${step.degraded ? `是（${step.degradedReason}）` : "否"} | ${tokens} | ${e(step.traceId)} | ${step.beforeHash.slice(0, 12)} → ${step.afterHash?.slice(0, 12) ?? "unknown"} | ${step.elapsedMs} |`,
     );
   }
-  const reasons = [...new Set(report.steps.map((step) => step.degradedReason).filter(Boolean))];
+  const reasons = [
+    ...new Set(
+      report.steps
+        .map((step) => step.degradedReason)
+        .filter((reason): reason is DegradedReasonCode => reason !== undefined),
+    ),
+  ];
   if (reasons.length)
-    lines.push("", "## 降级说明", "", ...reasons.map((reason) => `- ${e(reason)}`));
+    lines.push(
+      "",
+      "## 降级说明",
+      "",
+      ...reasons.map((reason) => `- \`${reason}\`：${e(degradedReasonLabel(reason))}`),
+    );
   return `${lines.join("\n")}\n`;
 }

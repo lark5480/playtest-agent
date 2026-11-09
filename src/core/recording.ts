@@ -4,6 +4,12 @@ import type { ModelBudgetState } from "../types/budget.js";
 import type { Action, GameState } from "../types/game.js";
 import type { GameKind, PublicSnapshot, RunMetadata } from "../types/run.js";
 import type { TokenSource } from "../types/step.js";
+import {
+  degradedReasonCodeOf,
+  governanceDegradedReasonCodeOf,
+  stepErrorCodeOf,
+  tokenUnavailableReasonCodeOf,
+} from "./evidence.js";
 import { canonicalize, digestOf } from "./fingerprint.js";
 import { deriveReportResult, summarizeUsage } from "./report-core.js";
 import type { Finding, ReportJson, ReportUsage, StepJson } from "./report-core.js";
@@ -425,8 +431,8 @@ function stepOf(game: GameKind, value: unknown, index: number): StepJson {
     replayed,
     digest,
     elapsedMs: number(raw["elapsedMs"], "step.elapsedMs", 604_800_000),
-    ...(degraded ? { degradedReason: "模型不可用或输出无效，已降级到确定性基线" } : {}),
-    ...(raw["error"] === undefined ? {} : { error: "执行失败；原始错误文本已省略" }),
+    ...(degraded ? { degradedReason: degradedReasonCodeOf(raw["degradedReason"]) } : {}),
+    ...(raw["error"] === undefined ? {} : { error: stepErrorCodeOf(raw["error"]) }),
     ...(raw["traceId"] === undefined
       ? {}
       : { traceId: identifier(raw["traceId"], "step.traceId") }),
@@ -435,7 +441,7 @@ function stepOf(game: GameKind, value: unknown, index: number): StepJson {
     ...(tokenSources === undefined ? {} : { tokenSources }),
     ...(raw["tokensUnavailableReason"] === undefined
       ? {}
-      : { tokensUnavailableReason: "未取得完整用量证据" }),
+      : { tokensUnavailableReason: tokenUnavailableReasonCodeOf(raw["tokensUnavailableReason"]) }),
   };
 }
 function usageOf(value: unknown): ReportUsage {
@@ -555,7 +561,9 @@ export function parseReportJson(value: unknown): ReportJson {
     governanceSource: identifier(raw["governanceSource"], "governanceSource"),
     ...(raw["governanceDegradedReason"] === undefined
       ? {}
-      : { governanceDegradedReason: "治理不可用或证据不完整，已显式降级" }),
+      : {
+          governanceDegradedReason: governanceDegradedReasonCodeOf(raw["governanceDegradedReason"]),
+        }),
     usage,
     findings,
     steps,

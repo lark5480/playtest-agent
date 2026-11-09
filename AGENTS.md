@@ -4,7 +4,7 @@
 > 契约定义与架构见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)；产品需求见 [`docs/PRD.md`](docs/PRD.md)。
 
 **项目**：`playtest-agent` —— AI 游戏自动测试 Agent（自主开局、按策略游玩、为每步产出治理证据、产出可复现缺陷报告）
-**位置**：`F:\other\code\ai\playtest-agent`（与作品集其余项目平级，独立仓库）
+**位置**：独立仓库，与作品集其余项目平级；本地通常按兄弟目录检出
 
 ---
 
@@ -87,7 +87,7 @@ docs/
 ├─ PRD.md            产品需求
 ├─ ARCHITECTURE.md   地基契约权威源（8 项冻结契约）
 ├─ TESTING.md        测试约定与验收判据
-├─ research/         带日期的一次性调研快照（**不回改**）
+├─ research/         带日期的一次性调研快照（**结论不改；元数据可修**）
 └─ decisions/        裁决清单（编号顺延追加）
 scenarios/           预留的外部场景目录（当前未接入；内置场景在 src/scenarios/registry.ts）
 reports/             产出报告（**不入库**）
@@ -136,7 +136,9 @@ npm run build
 2. **冻结契约要改，先写裁决** —— 在 `docs/decisions/` 追加条目说明兼容性影响，再动代码。
 3. **新逻辑补单测** —— `core/` 的新纯函数必须能被单测覆盖；适配器 / 治理实现必须过契约套件。
 4. **一个事实一个权威源** —— 契约定义只在 `docs/ARCHITECTURE.md`；
-   `docs/research/` 是带日期的一次性快照，**只作时点证据、不回改**。
+   `docs/research/` 是带日期快照：**不改写当时的结论、数据与判断**；本机路径、失效链接、
+   格式等元数据错误可直接修；事实已变化时在页首加“现状：见 X”，不静默改写。
+   被跟踪文档使用仓库相对路径或仓库名，**不写本机盘符路径**。
 5. **文档分层** —— 人类入口 `README.md`、AI 入口 `AGENTS.md`、长文与规则 `docs/`；
    改完跑 `npm run format:check`。
 6. **不静默降级** —— 模型不可用要**显式**标 `degraded` 并写进报告，

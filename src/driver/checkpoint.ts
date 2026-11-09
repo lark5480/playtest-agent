@@ -15,7 +15,7 @@ import type { Finding } from "../core/report-core.js";
 import type { Action, GameState, Observation } from "../types/game.js";
 import type { ModelBudgetState } from "../types/budget.js";
 import { validateModelBudgetState } from "../llm/budgeted-client.js";
-import type { IdempotencyFingerprint, StepRecord } from "../types/step.js";
+import type { DegradedReasonCode, IdempotencyFingerprint, StepRecord } from "../types/step.js";
 
 /**
  * 已决策但尚未确认提交的一步。
@@ -28,7 +28,7 @@ export interface PendingStep {
   readonly action: Action;
   readonly reason: string;
   readonly degraded: boolean;
-  readonly degradedReason?: string;
+  readonly degradedReason?: DegradedReasonCode;
   readonly llmTokens?: number;
   readonly model?: string;
   readonly fingerprint: IdempotencyFingerprint;

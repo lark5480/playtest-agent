@@ -5,6 +5,8 @@
  * 冻结后只允许向后兼容地扩展字段，不允许改变既有字段的含义或类型。
  */
 
+import type { DegradedReasonCode } from "./step.js";
+
 /**
  * 对局状态。
  *
@@ -91,8 +93,8 @@ export interface Decision {
   readonly reason: string;
   /** 本次决策是否走了降级路径（模型不可用 → 确定性基线）。 */
   readonly degraded: boolean;
-  /** 降级原因（degraded 为 true 时必填）。 */
-  readonly degradedReason?: string;
+  /** 降级原因码（degraded 为 true 时必填）。 */
+  readonly degradedReason?: DegradedReasonCode;
   /** 模型调用消耗的 token 数（确定性基线不产生；无 usage 时不填）。 */
   readonly llmTokens?: number;
   /** 实际参与决策的模型标识（写进报告，便于区分数据来源）。 */
