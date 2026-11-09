@@ -21,6 +21,25 @@ import type { Strategy } from "./strategy.js";
 import type { Decision, ExplorationContext, Observation } from "../types/game.js";
 import { StrategyStop } from "../types/run.js";
 import { LlmRequestError } from "../llm/request.js";
+import type { DegradedReasonCode } from "../types/step.js";
+
+/** 把模型调用的失败类别映射成闭合原因码：原始错误文本不入报告。 */
+function degradedCodeOf(error: unknown, aborted: boolean): DegradedReasonCode {
+  if (aborted) return "timeout";
+  if (!(error instanceof LlmRequestError)) return "unknown";
+  switch (error.category) {
+    case "http":
+      return "http-error";
+    case "network":
+      return "network-error";
+    case "timeout":
+      return "timeout";
+    case "cancelled":
+      return "cancelled";
+    case "invalid-response":
+      return "invalid-response";
+  }
+}
 
 export type LlmMode = "llm" | "llm-explore";
 export const EXPLORATION_PROMPT_VERSION = "exploration-v1";
@@ -106,7 +125,7 @@ export class LlmStrategy implements Strategy {
       return {
         ...base,
         degraded: true,
-        degradedReason: "未配置模型客户端（AI_API_KEY 缺失或模型端点不可用）",
+        degradedReason: "no-client",
       };
     }
 
@@ -129,7 +148,7 @@ export class LlmStrategy implements Strategy {
         return {
           ...base,
           degraded: true,
-          degradedReason: "模型未返回合法动作，已降级到确定性基线",
+          degradedReason: "invalid-action",
           ...(result.usage ? { llmTokens: result.usage.totalTokens } : {}),
           model: this.client.name,
         };
@@ -147,11 +166,7 @@ export class LlmStrategy implements Strategy {
       return {
         ...base,
         degraded: true,
-        degradedReason: controller.signal.aborted
-          ? "模型调用超时"
-          : error instanceof LlmRequestError
-            ? error.message
-            : "模型调用失败",
+        degradedReason: degradedCodeOf(error, controller.signal.aborted),
         model: this.client.name,
       };
     } finally {

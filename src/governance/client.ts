@@ -88,7 +88,7 @@ export class InMemoryGovernanceClient implements GovernanceClient {
       return {
         source: "unavailable",
         byStep: [],
-        unavailableReason: "内存替身没有该 session 的用量记录",
+        unavailableReason: "usage-source-unavailable",
       };
     }
     return {

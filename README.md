@@ -447,7 +447,7 @@ $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm ru
 
 ## 项目状态
 
-**当前阶段：Stage 0–6 + P0–P2 收口**（路线见 [`docs/PRD.md`](docs/PRD.md) §14）。
+**当前阶段：维护期**（Stage 0–6 + P0–P2 已收口，路线见 [`docs/PRD.md`](docs/PRD.md) §14）。
 
 已交付：
 
@@ -463,7 +463,7 @@ $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm ru
 - 模型预算：预扣与 in-flight 持久化；CLI 进程被终止后恢复不退款、不重发
 - 扫描：`npm run scan` 输出可追溯报告与成对可比窗口；发现项标注「待人工复核」
 - 真实链路补跑（2026-11-05）：真实模型 5 步 0 降级、aiwarden 契约+usage 7 通过 + 3 不适用、aiwarden 续跑 30 步 `replayed 1`
-- 测试：单元 270 / 契约 35 / 集成 25（本地无真实服务时按规则跳过 8 条）；
+- 测试：单元 272 / 契约 35 / 集成 25（本地无真实服务时按规则跳过 8 条）；
   `lint` / `format:check` / `typecheck` / `build` 全绿
 - CI：`master` 最新一轮全绿（2026-11-06）；job 清单见上文表格
 
@@ -471,7 +471,8 @@ $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm ru
   seed 2 的探索策略在第 5 步触达角点，基线未触达；每局 10 步约 1.7 万已知 tokens
 - 该样本只证明对照链路与指标可用，**不足以宣称普遍优势**；预算硬上限内完成
 
-待做（路线图后续项）：MCP 通道、**真实模型 60 步整局实跑**（历史上只跑了 5 步）。
+**收尾裁定（2026-11-09）**：MCP 通道与真实模型 60 步整局实跑**明确不做**，
+理由与影响面见裁决 36。项目进入维护期，只做 CI 与必要修复。
 
 ---
 
@@ -489,7 +490,7 @@ $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm ru
 
 ## 设计要点
 
-**aiwarden 零改动。** 本项目只通过它既有的 HTTP / MCP 边界**消费**治理能力
+**aiwarden 零改动。** 本项目只通过它既有的 HTTP 边界**消费**治理能力
 （幂等键 / 版本 CAS / 租约独占 / 成本归因 / 检查点续跑），不去改它。
 理由与证据见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §4。
 

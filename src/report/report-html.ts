@@ -1,5 +1,11 @@
 /** 自包含、无 JS、无外部资源；先验证 v2，再纯渲染与转义。 */
 import { parseReportJson } from "../core/recording.js";
+import {
+  degradedReasonLabel,
+  governanceDegradedReasonLabel,
+  stepErrorLabel,
+  tokenUnavailableReasonLabel,
+} from "../core/evidence.js";
 import type { Finding, ReportJson } from "../core/report-core.js";
 import type { GameKind, PublicSnapshot } from "../types/run.js";
 
@@ -67,8 +73,14 @@ export function renderReportHtml(input: ReportJson): string {
     : '<p class="muted">无。</p>';
   const steps = report.steps
     .map((step) => {
-      const amounts = `llm:${step.llmTokens ?? "unknown"} / ${step.tokenSources?.includes("synthetic") ? "synthetic" : "gov"}:${step.governanceTokens ?? "unknown"}`;
-      return `<tr id="step-${step.stepNo}"><td><a href="#step-${step.stepNo}">${step.stepNo}</a></td><td><code>${e(step.actionId ?? "无动作")}</code><details><summary>动作与公开状态</summary><pre>${e(JSON.stringify(step.action, null, 2))}</pre>${renderSnapshot(report.metadata.game, step.before, "before", new Set())}${step.after ? renderSnapshot(report.metadata.game, step.after, "after", new Set()) : "<p>后态 unknown；没有伪造执行结果。</p>"}</details></td><td class="outcome-${step.outcome}">${step.outcome}${step.error ? `<p>${e(step.error)}</p>` : ""}</td><td>${step.replayed ? "是" : "否"}</td><td>${step.degraded ? `是 · ${e(step.degradedReason)}` : "否"}</td><td>${e(amounts)}</td><td><code>${e(step.traceId ?? "无")}</code></td><td><code title="${e(step.beforeHash)}">${e(step.beforeHash.slice(0, 12))}</code> → <code title="${e(step.afterHash ?? "unknown")}">${e(step.afterHash?.slice(0, 12) ?? "unknown")}</code></td><td>${step.elapsedMs}</td></tr>`;
+      const amounts = `llm:${step.llmTokens ?? "unknown"} / ${step.tokenSources?.includes("synthetic") ? "synthetic" : "gov"}:${step.governanceTokens ?? "unknown"}${step.tokensUnavailableReason ? ` · ${tokenUnavailableReasonLabel(step.tokensUnavailableReason)}` : ""}`;
+      const degraded = step.degraded
+        ? `是${step.degradedReason ? ` · ${degradedReasonLabel(step.degradedReason)}` : ""}`
+        : "否";
+      const error = step.error
+        ? `<p><code>${e(step.error)}</code> · ${e(stepErrorLabel(step.error))}</p>`
+        : "";
+      return `<tr id="step-${step.stepNo}"><td><a href="#step-${step.stepNo}">${step.stepNo}</a></td><td><code>${e(step.actionId ?? "无动作")}</code><details><summary>动作与公开状态</summary><pre>${e(JSON.stringify(step.action, null, 2))}</pre>${renderSnapshot(report.metadata.game, step.before, "before", new Set())}${step.after ? renderSnapshot(report.metadata.game, step.after, "after", new Set()) : "<p>后态 unknown；没有伪造执行结果。</p>"}</details></td><td class="outcome-${step.outcome}">${step.outcome}${error}</td><td>${step.replayed ? "是" : "否"}</td><td>${e(degraded)}</td><td>${e(amounts)}</td><td><code>${e(step.traceId ?? "无")}</code></td><td><code title="${e(step.beforeHash)}">${e(step.beforeHash.slice(0, 12))}</code> → <code title="${e(step.afterHash ?? "unknown")}">${e(step.afterHash?.slice(0, 12) ?? "unknown")}</code></td><td>${step.elapsedMs}</td></tr>`;
     })
     .join("");
   const budget = report.budget;
@@ -90,7 +102,7 @@ ${firstFailure}
 <h2>运行条件</h2>${table(`<table><tbody><tr><th>会话 / 对局</th><td>${e(report.session)} / ${e(report.businessKey)}</td></tr><tr><th>seed / 步数 / 上限</th><td>${report.seed} / ${report.stepCount} / ${report.metadata.maxSteps}</td></tr><tr><th>Agent / 适配器 / Oracle</th><td>${e(report.metadata.agentVersion)} / ${e(report.metadata.adapter)} / ${e(report.metadata.oracle)}</td></tr><tr><th>策略 / prompt / 目标</th><td>${e(report.metadata.strategy)} / ${e(report.metadata.promptVersion ?? "未设置")} / ${e(report.metadata.target ?? "未设置")}</td></tr><tr><th>降级 / 重放 / 失败步数</th><td>${report.degradedSteps} / ${report.replayedSteps} / ${report.failedSteps}</td></tr><tr><th>起止时间（UTC）</th><td>${e(new Date(report.startedAt).toISOString())} → ${e(new Date(report.finishedAt).toISOString())}</td></tr></tbody></table>`)}
 <h2>治理证据</h2>${table(`<table><tbody><tr><th>LLM tokens</th><td>${report.usage.llm ?? "unknown"}</td></tr><tr><th>治理配额当量</th><td>${report.usage.governance ?? "unknown"}</td></tr><tr><th>替身合成值</th><td>${report.usage.synthetic ?? "unknown"}</td></tr><tr><th>来源</th><td>${e(report.usage.sources.join(", ") || "无")} · ${e(report.governanceSource)}</td></tr><tr><th>无成本数据步数 / traceId 覆盖</th><td>${report.usage.unavailableSteps} / ${report.steps.filter((step) => step.traceId).length}</td></tr></tbody></table>`)}
 <p class="note">三种单位分列，不相加。治理配额当量不是模型 tokens；替身合成值不代表真实成本。unknown 不是 0；缺失任一相关用量时不以已知部分冒充完整用量。</p>
-${report.governanceDegradedReason ? `<p class="note">治理降级：${e(report.governanceDegradedReason)}</p>` : ""}${budgetSection}
+${report.governanceDegradedReason ? `<p class="note">治理降级：${e(governanceDegradedReasonLabel(report.governanceDegradedReason))}</p>` : ""}${budgetSection}
 <h2>发现</h2>${findings}
 <h2>步骤</h2>${table(`<table class="steps"><thead><tr><th>#</th><th>动作</th><th>结果</th><th>幂等</th><th>降级</th><th>分源用量</th><th>trace</th><th>公开状态摘要</th><th>耗时(ms)</th></tr></thead><tbody>${steps}</tbody></table>`)}
 <details><summary>初态与末态</summary>${renderSnapshot(report.metadata.game, report.initialState, "初始公开状态", new Set())}${renderSnapshot(report.metadata.game, report.finalState, "最终公开状态", new Set())}</details>

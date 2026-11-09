@@ -156,7 +156,7 @@ async function withUsage(
     return mergeUsageIntoSteps(steps, {
       source: "unavailable",
       byStep: [],
-      unavailableReason: "治理用量查询失败",
+      unavailableReason: "usage-query-failed",
     });
   }
 }

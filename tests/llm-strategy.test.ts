@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { LlmStrategy, type LlmClient, type LlmPickResult } from "../src/strategy/llm.js";
+import { LlmRequestError } from "../src/llm/request.js";
 import type { Observation } from "../src/types/game.js";
 
 function observation(): Observation {
@@ -50,7 +51,7 @@ test("模型调用失败 → 降级且不抛错", async () => {
   const strategy = new LlmStrategy(failing);
   const d = await strategy.decide({ observation: observation(), seed: 1 });
   assert.equal(d.degraded, true);
-  assert.equal(d.degradedReason, "模型调用失败");
+  assert.equal(d.degradedReason, "unknown");
   assert.ok(d.action, "降级后仍要给出动作");
 });
 
@@ -98,7 +99,21 @@ test("模型超时 → 降级（不无限等待）", async () => {
   const strategy = new LlmStrategy(slow, 50);
   const d = await strategy.decide({ observation: observation(), seed: 1 });
   assert.equal(d.degraded, true);
-  assert.ok(d.degradedReason?.includes("超时"));
+  assert.equal(d.degradedReason, "timeout");
+  assert.ok(d.action);
+});
+
+test("模型 HTTP 错误 → 降级原因码为 http-error", async () => {
+  const failing: LlmClient = {
+    name: "http",
+    pickAction: async () => {
+      throw new LlmRequestError("http", 500);
+    },
+  };
+  const strategy = new LlmStrategy(failing);
+  const d = await strategy.decide({ observation: observation(), seed: 1 });
+  assert.equal(d.degraded, true);
+  assert.equal(d.degradedReason, "http-error");
   assert.ok(d.action);
 });
 

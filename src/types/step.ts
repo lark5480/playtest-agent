@@ -48,6 +48,70 @@ export interface IdempotencyFingerprint {
 export type TokenSource = "model-usage" | "governance-usage" | "synthetic" | "unavailable";
 
 /**
+ * 降级原因码（闭合枚举）。
+ *
+ * 报告只允许以下值：**原始错误文本与凭证一律不入报告**，
+ * 但原因必须可归因（超时 ≠ 无密钥 ≠ 模型给了非法动作）。
+ */
+export type DegradedReasonCode =
+  /** 未配置模型客户端（无密钥或端点不可用）。 */
+  | "no-client"
+  /** 模型调用超时。 */
+  | "timeout"
+  /** 模型未返回合法动作。 */
+  | "invalid-action"
+  /** 模型请求返回 HTTP 错误。 */
+  | "http-error"
+  /** 模型连接失败。 */
+  | "network-error"
+  /** 模型调用已取消。 */
+  | "cancelled"
+  /** 模型响应格式无效。 */
+  | "invalid-response"
+  /** 未归类的调用失败。 */
+  | "unknown";
+
+/**
+ * 执行失败原因码（闭合枚举）。
+ *
+ * 与 `ErrorCategory`（粗分类）互补：一类说明"哪一层出错"，这里说明"错在哪一步"。
+ */
+export type StepErrorCode =
+  /** 治理调用失败，未执行游戏动作。 */
+  | "governance-error"
+  /** 适配器动作请求失败（网络 / 服务异常）。 */
+  | "game-request-failed"
+  /** 动作未被确认成功，未取得后置状态。 */
+  | "game-action-unconfirmed"
+  /** 治理命中重放，但后置状态无法观察。 */
+  | "replay-unobservable"
+  /** 重放后游戏状态与预期不一致。 */
+  | "replay-diverged"
+  /** 需要条件重试，但适配器不支持该能力。 */
+  | "conditional-retry-unsupported"
+  /** 重放补偿动作未被确认。 */
+  | "replay-compensation-failed"
+  /** 执行后未取得后置状态。 */
+  | "missing-post-state"
+  /** 未归类的失败（仅用于解析不可信 / 历史报告）。 */
+  | "unknown";
+
+/**
+ * 未取得治理用量的原因码（闭合枚举）。
+ */
+export type TokenUnavailableReasonCode =
+  /** 单次治理调用响应不含成本，需按 session 查询。 */
+  | "requires-session-query"
+  /** 治理用量查询失败（网络或响应无效）。 */
+  | "usage-query-failed"
+  /** 治理侧暂无可归因用量。 */
+  | "usage-source-unavailable"
+  /** 该步无治理侧用量记录。 */
+  | "no-step-record"
+  /** 未归类的缺失原因。 */
+  | "unknown";
+
+/**
  * 治理证据：这一步在治理侧的凭据。
  *
  * 成本归因四维（租户 / 会话 / 步骤 / 工具）在 aiwarden 侧落库；
@@ -64,8 +128,8 @@ export interface GovernanceEvidence {
   readonly tokens?: number;
   /** 治理侧 token 数的来源口径。 */
   readonly tokenSource?: TokenSource;
-  /** 未取得治理侧成本时的显式原因。 */
-  readonly tokensUnavailableReason?: string;
+  /** 未取得治理侧成本时的显式原因码。 */
+  readonly tokensUnavailableReason?: TokenUnavailableReasonCode;
 }
 
 /**
@@ -89,8 +153,8 @@ export interface StepRecord {
   readonly reason: string;
   /** 本步是否走降级路径。 */
   readonly degraded: boolean;
-  /** 降级原因。 */
-  readonly degradedReason?: string;
+  /** 降级原因码（降级时为必填码，原始错误文本不入报告）。 */
+  readonly degradedReason?: DegradedReasonCode;
   /** 模型调用消耗的 token 数（确定性基线 / 未取得时为不填）。 */
   readonly llmTokens?: number;
   /** 实际参与决策的模型标识（未使用模型时不填）。 */
@@ -99,8 +163,8 @@ export interface StepRecord {
   readonly outcome: StepOutcome;
   /** 执行后观察；执行失败时为 null。 */
   readonly observationAfter: Observation | null;
-  /** 失败原因（outcome 为 rejected / failed 时）。 */
-  readonly error?: string;
+  /** 失败原因码（outcome 为 rejected / failed 时）。 */
+  readonly error?: StepErrorCode;
   /** 治理证据。 */
   readonly governance: GovernanceEvidence;
   /** 步骤耗时（毫秒）。 */

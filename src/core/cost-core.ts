@@ -17,7 +17,7 @@ export function mergeUsageIntoSteps(
   usage: GovernanceUsage,
 ): StepRecord[] {
   if (usage.source === "unavailable") {
-    const reason = usage.unavailableReason ?? "治理侧未提供用量数据";
+    const reason = usage.unavailableReason ?? "usage-source-unavailable";
     return steps.map((step) =>
       step.governance.tokens === undefined
         ? {
@@ -43,7 +43,7 @@ export function mergeUsageIntoSteps(
         governance: {
           ...step.governance,
           tokenSource: "unavailable",
-          tokensUnavailableReason: "该步无治理侧用量记录",
+          tokensUnavailableReason: "no-step-record",
         },
       };
     }

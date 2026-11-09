@@ -5,6 +5,10 @@ on:
     branches: [master, main, dev]
   pull_request:
     branches: [master, main, dev]
+  # 每周一 03:00 UTC 巡检上游漂移：othello-online / chess-arena / tongshi-ju 的变更
+  # 不会触发本仓 push/PR，只有定时跑才能发现失配。
+  schedule:
+    - cron: "0 3 * * 1"
 
 # 同一分支上的新提交自动取消旧任务，节省 CI 时长
 concurrency:
@@ -19,6 +23,7 @@ jobs:
   verify:
     name: Lint · Format · Typecheck · Test · Build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -85,6 +90,7 @@ jobs:
     name: Agent end-to-end (plays a real game)
     runs-on: ubuntu-latest
     needs: verify
+    timeout-minutes: 10
 
     steps:
       - name: Checkout

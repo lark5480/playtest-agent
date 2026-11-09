@@ -262,29 +262,77 @@ test("预算账目包含未形成动作的调用，不与步骤模型用量双�
   assert.equal(unknown.usage.llm, null);
   assert.ok(unknown.usage.sources.includes("unavailable"));
 });
-test("统计降级 / 重放 / 失败；降级原因不包含原始错误或凭证", () => {
+test("统计降级 / 重放 / 失败；原因以闭合码落报告并在 Markdown 展示语义", () => {
   const report = buildReportJson(
     params({
       finalState: opening(),
       steps: [
         step({
           degraded: true,
-          degradedReason: "SECRET_TOKEN",
+          degradedReason: "timeout",
           outcome: "failed",
           observationAfter: null,
-          error: "SECRET_TOKEN",
-          governance: { replayed: true, elapsedMs: 3, tokensUnavailableReason: "SECRET_TOKEN" },
+          error: "game-request-failed",
+          governance: {
+            replayed: true,
+            elapsedMs: 3,
+            tokensUnavailableReason: "usage-query-failed",
+          },
         }),
       ],
-      governanceDegradedReason: "SECRET_TOKEN",
+      governanceDegradedReason: "unreachable",
       stopReason: "execution-failed",
     }),
   );
   assert.equal(report.degradedSteps, 1);
   assert.equal(report.replayedSteps, 1);
   assert.equal(report.failedSteps, 1);
-  assert.ok(!JSON.stringify(report).includes("SECRET_TOKEN"));
-  assert.ok(!renderReportMarkdown(report).includes("SECRET_TOKEN"));
+  assert.equal(report.steps[0]?.degradedReason, "timeout");
+  assert.equal(report.steps[0]?.error, "game-request-failed");
+  assert.equal(report.steps[0]?.tokensUnavailableReason, "usage-query-failed");
+  assert.equal(report.governanceDegradedReason, "unreachable");
+  const md = renderReportMarkdown(report);
+  assert.match(md, /模型调用超时/);
+  assert.match(md, /game-request-failed/);
+  assert.match(md, /治理降级：aiwarden 不可达/);
+});
+test("不可信原因字段收敛为 unknown，不回显原文或凭证", () => {
+  const report = buildReportJson(
+    params({
+      finalState: opening(),
+      steps: [
+        step({
+          degraded: true,
+          degradedReason: "timeout",
+          outcome: "failed",
+          observationAfter: null,
+          error: "game-request-failed",
+          governance: {
+            replayed: false,
+            elapsedMs: 3,
+            tokensUnavailableReason: "usage-query-failed",
+          },
+        }),
+      ],
+      governanceDegradedReason: "unreachable",
+      stopReason: "execution-failed",
+    }),
+  );
+  const tampered = JSON.parse(JSON.stringify(report)) as {
+    steps: [Record<string, unknown>];
+    governanceDegradedReason?: string;
+  };
+  tampered["steps"][0].degradedReason = "SECRET_TOKEN";
+  tampered["steps"][0].error = "SECRET_TOKEN";
+  tampered["steps"][0].tokensUnavailableReason = "SECRET_TOKEN";
+  tampered["governanceDegradedReason"] = "SECRET_TOKEN";
+  const parsed = parseReportJson(tampered);
+  assert.equal(parsed.steps[0]?.degradedReason, "unknown");
+  assert.equal(parsed.steps[0]?.error, "unknown");
+  assert.equal(parsed.steps[0]?.tokensUnavailableReason, "unknown");
+  assert.equal(parsed.governanceDegradedReason, "unknown");
+  assert.ok(!JSON.stringify(parsed).includes("SECRET_TOKEN"));
+  assert.ok(!renderReportMarkdown(parsed).includes("SECRET_TOKEN"));
 });
 test("Markdown 纯函数、结论与独立 evidence、无total、转义文本", () => {
   const report = buildReportJson(

@@ -121,7 +121,7 @@ export class AiwardenHttpClient implements GovernanceClient {
         replayed: true,
         ...(res.result?.["traceId"] ? { traceId: String(res.result["traceId"]) } : {}),
         tokenSource: "unavailable",
-        tokensUnavailableReason: "单次工具调用响应不含成本，需按 session 查询用量",
+        tokensUnavailableReason: "requires-session-query",
       };
     }
 
@@ -132,7 +132,7 @@ export class AiwardenHttpClient implements GovernanceClient {
       replayed: false,
       ...(res.result?.["traceId"] ? { traceId: String(res.result["traceId"]) } : {}),
       tokenSource: "unavailable",
-      tokensUnavailableReason: "单次工具调用响应不含成本，需按 session 查询用量",
+      tokensUnavailableReason: "requires-session-query",
     };
   }
 
@@ -147,7 +147,7 @@ export class AiwardenHttpClient implements GovernanceClient {
     readonly expectedSteps?: readonly number[];
     readonly since?: number;
   }): Promise<GovernanceUsage> {
-    let lastReason = "aiwarden usage 在该 session 暂无记录（可能尚未落库）";
+    let lastReason: "usage-source-unavailable" | "no-step-record" = "usage-source-unavailable";
     const expected = params.expectedSteps ?? [];
 
     for (let attempt = 0; attempt < this.usagePollAttempts; attempt += 1) {
@@ -161,19 +161,12 @@ export class AiwardenHttpClient implements GovernanceClient {
         if (byStep.length > 0 && missing.length === 0) {
           return { source: "governance-usage", byStep };
         }
-        if (byStep.length > 0 && missing.length > 0) {
-          lastReason = `aiwarden usage 仍缺 ${missing.length} 步记录（${missing
-            .slice(0, 8)
-            .join(", ")}）`;
-        }
-        if (rows.length > 0 && byStep.length === 0) {
-          lastReason = "aiwarden usage 记录缺少 stepNo，无法按步骤归因";
-        }
+        if (byStep.length > 0 && missing.length > 0) lastReason = "no-step-record";
       } catch {
         return {
           source: "unavailable",
           byStep: [],
-          unavailableReason: "aiwarden usage 查询失败（网络或响应无效）",
+          unavailableReason: "usage-query-failed",
         };
       }
 
