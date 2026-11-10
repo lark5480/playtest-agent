@@ -7,7 +7,10 @@
 
 **建立时间**：2026-11-04　**适用文档**：
 [`research/2026-11-04-选题论证与差异化声明.md`](../research/2026-11-04-选题论证与差异化声明.md) ·
-[`research/2026-11-04-AI NPC 竞品与记忆架构调研.md`](../research/2026-11-04-AI NPC 竞品与记忆架构调研.md)
+[`research/2026-11-04-AI NPC 竞品与记忆架构调研.md`](../research/2026-11-04-AI%20NPC%20竞品与记忆架构调研.md)
+
+> **存放说明**：NPC 的宿主代码在兄弟仓库 tongshi-ju（`lib/npc/`），其
+> `docs/NPC-ARCHITECTURE.md` 按编号引用本清单；立项调研快照也存放于本仓库 `docs/research/`。
 
 ---
 

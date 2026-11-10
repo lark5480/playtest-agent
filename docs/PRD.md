@@ -110,27 +110,15 @@
 
 ## 7. 游戏适配器契约（SPI）
 
-```ts
-interface GameAdapter {
-  readonly name: string;
-  open(params: { seed: number }): Promise<{ state: GameState; token: string }>;
-  resume?(params: { token: string }): Promise<{ state: GameState } | null>; // 可选
-  observe(params: { state: GameState; token: string }): Promise<Observation>;
-  act(params: { state: GameState; token: string; action: Action }): Promise<{
-    ok: boolean;
-    observation?: Observation;
-    error?: string;
-  }>;
-  isTerminal(params: { state: GameState }): boolean;
-}
-```
+> 方法签名的权威源是冻结契约 ④：[`src/adapter/game-adapter.ts`](../src/adapter/game-adapter.ts)
+> （契约清单见 [`ARCHITECTURE.md`](ARCHITECTURE.md) §1）。本文不复制定义，避免漂移。
 
 **硬约束**：
 
 1. **适配器只读被测游戏** —— 既有游戏零改动（红线 2.2）；
 2. **合法动作集由适配器独立计算** —— 不复用被测游戏的规则代码，
    否则"用游戏自己的规则校验游戏自己"会漏掉共模错误；
-3. **必须过契约测试套件**（`src/adapter/contract-suite.ts`），7 条用例。
+3. **必须过契约测试套件**（`src/adapter/contract-suite.ts`，用例清单见 [`TESTING.md`](TESTING.md) §3）。
 
 **首个适配器**：`othello-local` —— 打 othello-online 的本地 `preview`（内存版 `/api`），
 **零云端依赖**。
@@ -143,19 +131,18 @@ interface GameAdapter {
 
 ## 8. 策略层契约（SPI）
 
-```ts
-interface Strategy {
-  readonly name: string;
-  decide(params: { observation: Observation; seed: number }): Promise<Decision>;
-}
-```
+> 方法签名的权威源是冻结契约 ⑤：[`src/strategy/strategy.ts`](../src/strategy/strategy.ts)。
+> 本文不复制定义，避免漂移。
 
-**两个实现**：
+**决策实现**：
 
-| 实现                | 用途                                          | 确定性                                       |
-| ------------------- | --------------------------------------------- | -------------------------------------------- |
-| `HeuristicStrategy` | 确定性基线；降级目标；探索走法                | ✅ 按 `(seed, observation.seq)` 无状态派生   |
-| `LlmStrategy`       | 模型决策（OpenAI 兼容）；不可用时**显式降级** | 只从合法动作集里选；不承诺同 seed 重采样一致 |
+| 实现                | 用途                                                                     | 确定性                                       |
+| ------------------- | ------------------------------------------------------------------------ | -------------------------------------------- |
+| `HeuristicStrategy` | 确定性基线；降级目标；探索走法                                           | ✅ 按 `(seed, observation.seq)` 无状态派生   |
+| `LlmStrategy`       | 模型决策（OpenAI 兼容，含 `llm-explore` 探索模式）；不可用时**显式降级** | 只从合法动作集里选；不承诺同 seed 重采样一致 |
+
+> 回放另有 `RecordedStrategy`（[`src/strategy/recorded.ts`](../src/strategy/recorded.ts)）：
+> 只执行已录制动作，不重新询问模型；局面与录制前态分歧即显式停止。
 
 > 缺陷复现依赖**已录制的完整动作**，不在回放时重新询问模型；模型输出的不确定性
 > 由报告中的公开状态与动作序列承担，而不是由“同 seed 再采样一次”承担。
@@ -200,27 +187,17 @@ interface Strategy {
 
 ### 10.1 幂等键构成（冻结契约 ⑦）
 
-```
-幂等键 = { businessKey } :: { session } :: { stepNo } :: { digest }
-digest  = sha256(canonicalize({ stepNo, payload })).slice(0, 32)
-```
+> 键构成与摘要规则的权威源见 [`ARCHITECTURE.md`](ARCHITECTURE.md) §2–3（契约 ③⑦），
+> 本文不复制定义。
 
-- `businessKey` = 对局标识（房间码）
-- `session` = 本次运行的 session key
-- `digest` = 动作内容摘要（键序无关；数组保序；`undefined` 丢弃；`NaN → null`）
-
-**stepNo 必须参与摘要** —— 否则"第 3 步与第 7 步做了同一个动作"会撞键，
-续跑时会误判为重放而跳过真实动作。（本项目在单测阶段抓到并修正过。）
+产品语义：`businessKey` 是对局标识（房间码），`session` 标识本次运行。
+**stepNo 必须参与摘要** —— 否则不同步号的同一动作会撞键，续跑误判为重放而跳过真实动作
+（本项目在单测阶段抓到并修正过）。
 
 ### 10.2 关键语义
 
-| 语义     | 规则                                                        | 对齐                    |
-| -------- | ----------------------------------------------------------- | ----------------------- |
-| 动作幂等 | 同键重放 → `replayed: true`，**不产生第二次副作用**         | aiwarden ADR-013 决策 6 |
-| 崩溃续跑 | 崩在"动作已生效、检查点未落" → 续跑重做该步，幂等键命中终态 | 同上（双防线）          |
-| 租约独占 | 同 session 并发 → 409，不并行产生副作用                     | ADR-013 决策 4          |
-| 成本归因 | 四维：租户 / 会话 / 步骤 / 工具                             | ADR-014                 |
-| 替身等价 | 内存替身与真实 HTTP 实现跑**同一套**契约测试                | 本项目红线              |
+> 动作幂等 / 崩溃续跑 / 租约独占 / 成本归因 / 替身等价的规则权威源见
+> [`ARCHITECTURE.md`](ARCHITECTURE.md) §3；与 aiwarden ADR-013 / ADR-014 的对齐关系同见该表。
 
 ### 10.3 两种治理客户端
 
@@ -270,14 +247,14 @@ Node.js **≥ 24.22.1**（2026-10 Node 安全公告修复线）· TypeScript 5.5
 
 ### 12.3 复用资产
 
-| 资产                     | 位置                                    | 怎么用                              |
-| ------------------------ | --------------------------------------- | ----------------------------------- |
-| aiwarden 治理管道        | 兄弟仓库 aiwarden（需自行检出）         | 进程外消费（仅 HTTP），零改动       |
-| 幂等键口径               | aiwarden ADR-013 决策 6                 | 冻结契约 ⑦ 与之同构                 |
-| othello 规则语义         | `othello-online/src/utils/gameLogic.ts` | 被测对象；特异断言**独立重写**      |
-| othello 本地 mock API    | `othello-online/vite.config.ts`         | 被测游戏启动方式（零 EdgeOne 依赖） |
-| 纯函数分层 + PRNG 自实现 | `tongshi-ju/lib/engine/*`               | 本项目地基的分层约定                |
-| CI 两段结构              | `tongshi-ju/.github/workflows/ci.yml`   | 本项目 CI 写法                      |
+| 资产                     | 位置                                             | 怎么用                              |
+| ------------------------ | ------------------------------------------------ | ----------------------------------- |
+| aiwarden 治理管道        | 兄弟仓库 `lark5480/aiwarden`（公开，需自行检出） | 进程外消费（仅 HTTP），零改动       |
+| 幂等键口径               | aiwarden ADR-013 决策 6                          | 冻结契约 ⑦ 与之同构                 |
+| othello 规则语义         | `othello-online/src/utils/gameLogic.ts`          | 被测对象；特异断言**独立重写**      |
+| othello 本地 mock API    | `othello-online/vite.config.ts`                  | 被测游戏启动方式（零 EdgeOne 依赖） |
+| 纯函数分层 + PRNG 自实现 | `tongshi-ju/lib/engine/*`                        | 本项目地基的分层约定                |
+| CI 两段结构              | `tongshi-ju/.github/workflows/ci.yml`            | 本项目 CI 写法                      |
 
 ---
 
@@ -358,19 +335,22 @@ Node.js **≥ 24.22.1**（2026-10 Node 安全公告修复线）· TypeScript 5.5
 | --- | ----------------------------------- | ----------------------- | ------------------------------------------------------------------------------ |
 | U1  | aiwarden 侧是否注册**游戏动作**工具 | 与 aiwarden 协调时      | 当前用 `create_ticket` 作替身验证管道；真游戏动作工具需其注册                  |
 | U2  | ~~本机 Docker 可用性~~              | ✅ 已解决（11-04）      | Docker 恢复后真实链路已实跑，见 ARCHITECTURE §6                                |
-| U3  | 第二个被测对象选谁                  | 后续 1 开工时           | 需先决定是否给 chess-arena 加只读接口                                          |
-| U4  | 场景级预算熔断的具体阈值            | 后续 2 开工时           | 长跑成本控制                                                                   |
+| U3  | 第二个被测对象选谁                  | ✅ 已解决（2026-11-04） | chess-arena 本地内存房间 API，零改动（后续 1 完成）                            |
+| U4  | 场景级预算熔断的具体阈值            | ✅ 已解决（裁决 33）    | 请求前预扣硬调用次数，usage 为软停止线（后续 2 完成）                          |
 | U5  | 真实链路的**续跑**如何对齐 session  | ✅ 已解决（2026-11-05） | 同 tenant / session / businessKey 下实跑 30 步，`replayed 1`；检查点保留 token |
 
 ---
 
 ## 17. 相关文档
 
-| 文档                                                                                         | 内容                                 |
-| -------------------------------------------------------------------------------------------- | ------------------------------------ |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md)                                                         | **地基契约的权威源**（8 项冻结契约） |
-| [`AGENTS.md`](../AGENTS.md)                                                                  | AI 协作入口：红线 / 命令 / 改动纪律  |
-| [`TESTING.md`](TESTING.md)                                                                   | 测试约定与验收判据                   |
-| [`research/2026-11-03-竞品与自动测试现状.md`](research/2026-11-03-竞品与自动测试现状.md)     | 调研快照（结论不改；元数据可修）     |
-| [`research/2026-11-03-选题论证与差异化声明.md`](research/2026-11-03-选题论证与差异化声明.md) | 立项论证（结论不改；元数据可修）     |
-| [`decisions/00-PRD修订裁决清单.md`](decisions/00-PRD修订裁决清单.md)                         | 裁决清单（编号顺延追加）             |
+| 文档                                                                                                       | 内容                                      |
+| ---------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md)                                                                       | **地基契约的权威源**（8 项冻结契约）      |
+| [`AGENTS.md`](../AGENTS.md)                                                                                | AI 协作入口：红线 / 命令 / 改动纪律       |
+| [`TESTING.md`](TESTING.md)                                                                                 | 测试约定与验收判据                        |
+| [`research/2026-11-03-竞品与自动测试现状.md`](research/2026-11-03-竞品与自动测试现状.md)                   | 调研快照（结论不改；元数据可修）          |
+| [`research/2026-11-03-选题论证与差异化声明.md`](research/2026-11-03-选题论证与差异化声明.md)               | 立项论证（结论不改；元数据可修）          |
+| [`research/2026-11-04-AI NPC 竞品与记忆架构调研.md`](research/2026-11-04-AI%20NPC%20竞品与记忆架构调研.md) | tongshi-ju NPC 立项调研快照               |
+| [`research/2026-11-04-选题论证与差异化声明.md`](research/2026-11-04-选题论证与差异化声明.md)               | tongshi-ju NPC 立项论证快照               |
+| [`decisions/00-PRD修订裁决清单.md`](decisions/00-PRD修订裁决清单.md)                                       | 裁决清单（编号顺延追加）                  |
+| [`decisions/01-NPC立项裁决清单.md`](decisions/01-NPC立项裁决清单.md)                                       | tongshi-ju NPC 立项裁决（宿主在兄弟仓库） |
