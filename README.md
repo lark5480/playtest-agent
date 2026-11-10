@@ -40,12 +40,12 @@
 
 ## 前置仓库（本地联调可选）
 
-| 仓库             | 地址                                         | 用途                             |
-| ---------------- | -------------------------------------------- | -------------------------------- |
-| `othello-online` | <https://github.com/lark5480/othello-online> | 被测游戏 A；自带本地 mock API    |
-| `chess-arena`    | <https://github.com/lark5480/chess-arena>    | 被测游戏 B；Next.js 内存房间 API |
-| `tongshi-ju`     | <https://github.com/lark5480/tongshi-ju>     | 跨仓库集成与 e2e                 |
-| `aiwarden`       | 需自备（本项目零改动，仅通过 HTTP 消费）     | 真实治理链路（可选）             |
+| 仓库             | 地址                                                                     | 用途                             |
+| ---------------- | ------------------------------------------------------------------------ | -------------------------------- |
+| `othello-online` | <https://github.com/lark5480/othello-online>                             | 被测游戏 A；自带本地 mock API    |
+| `chess-arena`    | <https://github.com/lark5480/chess-arena>                                | 被测游戏 B；Next.js 内存房间 API |
+| `tongshi-ju`     | <https://github.com/lark5480/tongshi-ju>                                 | 跨仓库集成与 e2e                 |
+| `aiwarden`       | <https://github.com/lark5480/aiwarden>（本项目零改动，仅通过 HTTP 消费） | 真实治理链路（可选）             |
 
 本地按兄弟目录检出（例如 `../othello-online`），下文命令的相对路径以此为前提；
 CI 会自行拉取前三个仓库。**只跑 `npm run demo` 不需要任何前置仓库。**
@@ -483,9 +483,9 @@ $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm ru
 - 模型预算：预扣与 in-flight 持久化；CLI 进程被终止后恢复不退款、不重发
 - 扫描：`npm run scan` 输出可追溯报告与成对可比窗口；发现项标注「待人工复核」
 - 真实链路补跑（2026-11-05）：真实模型 5 步 0 降级、aiwarden 契约+usage 7 通过 + 3 不适用、aiwarden 续跑 30 步 `replayed 1`
-- 测试：单元 272 / 契约 35 / 集成 25（本地无真实服务时按规则跳过 8 条）；
+- 测试：单元 / 契约 / 集成三层门禁齐全，数量以「测试结果」节的现查命令为准；
   `lint` / `format:check` / `typecheck` / `build` 全绿
-- CI：`master` 最新一轮全绿（2026-11-06）；job 清单见上文表格
+- CI：`master` 合并门禁全绿（2026-11-09，PR #16）；job 清单见上文表格，实时状态以 Actions 为准
 
 - 真实模型对照小样本（2026-11-06）：2 seeds × 10 步，两对同窗口可比、0 降级；
   seed 2 的探索策略在第 5 步触达角点，基线未触达；每局 10 步约 1.7 万已知 tokens
@@ -498,13 +498,15 @@ $ PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm ru
 
 ## 文档
 
-| 文档                                           | 内容                                         |
-| ---------------------------------------------- | -------------------------------------------- |
-| [`AGENTS.md`](AGENTS.md)                       | AI 协作入口：红线 / 技术栈 / 命令 / 改动纪律 |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | **地基契约的权威源**（8 项冻结契约）         |
-| [`docs/PRD.md`](docs/PRD.md)                   | 产品需求 / 成功标准 / 路线图                 |
-| [`docs/TESTING.md`](docs/TESTING.md)           | 测试约定与验收判据                           |
-| [`docs/decisions/`](docs/decisions/)           | 裁决清单（编号顺延追加）                     |
+| 文档                                             | 内容                                                    |
+| ------------------------------------------------ | ------------------------------------------------------- |
+| [`AGENTS.md`](AGENTS.md)                         | AI 协作入口：红线 / 技术栈 / 命令 / 改动纪律            |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)   | **地基契约的权威源**（8 项冻结契约）                    |
+| [`docs/PRD.md`](docs/PRD.md)                     | 产品需求 / 成功标准 / 路线图                            |
+| [`docs/TESTING.md`](docs/TESTING.md)             | 测试约定与验收判据                                      |
+| [`docs/sample-report.md`](docs/sample-report.md) | 报告格式样例（v2，demo 时点产物）                       |
+| [`docs/research/`](docs/research/)               | 带日期调研快照（含 NPC 立项调研；结论不改、元数据可修） |
+| [`docs/decisions/`](docs/decisions/)             | 裁决清单（00 本项目 PRD 修订；01 tongshi-ju NPC 立项）  |
 
 ---
 

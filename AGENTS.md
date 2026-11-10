@@ -153,7 +153,7 @@ npm run build
 
 **CI**：push / PR 到 `master` / `main` / `dev` 均触发；
 `verify`（lint / format / typecheck / 单测 / 契约 / **进程级续跑** / **缺陷回放** / **预算** / 构建）
-与 `windows-recovery`（Windows 上的续跑 / 回放 / 预算）先跑，随后并行执行
+先跑，`windows-recovery`（Windows 上的续跑 / 回放 / 预算）与其并行；verify 通过后并行执行
 `e2e`（真实跑一局）与 `integration-games` / `integration-tongshi` / `e2e-tongshi`（强制真实服务）；
 `integration-aiwarden` 仅在配置 `vars.AIWARDEN_BASE_URL` 时运行（未配置即 Skipped）。
 细节以 `.github/workflows/ci.yml` 为准。**CI 绿灯 = 可合并判据**。
