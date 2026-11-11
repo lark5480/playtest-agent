@@ -17,6 +17,7 @@ import type { Finding } from "../core/report-core.js";
 import { decideResumeAction } from "../core/resume.js";
 import { stateHashOf } from "../core/state-hash.js";
 import { assertIdempotencyKey } from "../governance/idempotency.js";
+import { GovernanceDeniedError } from "../governance/errors.js";
 import type { GameAdapter } from "../adapter/game-adapter.js";
 import type { GovernanceClient } from "../types/governance.js";
 import type { Action, GameState, Observation } from "../types/game.js";
@@ -654,7 +655,9 @@ async function executeAction(params: {
       elapsedMs: Date.now() - started,
       findings,
     };
-  } catch {
+  } catch (error) {
+    // 治理拒绝（待审批 / 已驳回）与网络故障可辨（裁决 37）；原始错误文本仍不入报告。
+    if (error instanceof GovernanceDeniedError) failureCode = "governance-denied";
     return {
       outcome: "failed",
       observationAfter,

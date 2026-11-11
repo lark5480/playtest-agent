@@ -79,6 +79,8 @@ export type DegradedReasonCode =
 export type StepErrorCode =
   /** 治理调用失败，未执行游戏动作。 */
   | "governance-error"
+  /** 治理拒绝执行（待审批 / 已驳回），未执行游戏动作。 */
+  | "governance-denied"
   /** 适配器动作请求失败（网络 / 服务异常）。 */
   | "game-request-failed"
   /** 动作未被确认成功，未取得后置状态。 */

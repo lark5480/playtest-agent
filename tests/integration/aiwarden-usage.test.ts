@@ -93,6 +93,15 @@ test("真实 aiwarden：按 session 查到用量且重放不重复计入", { ski
   // aiwarden 在「未配置租户当月预算」时按设计把工具调用当量记 0；
   // 配置 t_budget 后才是 100/次。这里验证 usage 接口与归因，不把 0 当成失败。
   assert.ok(firstStep0.promptTokens >= 0 && firstStep0.completionTokens >= 0);
+  // 已配预算时（nightly 或本地显式置 flag）断言真实当量路径：
+  // aiwarden `aiwarden.quota.tool-token-cost` 默认 100/次，明细口径与配额扣减一致。
+  if (process.env.PLAYTEST_EXPECT_QUOTA_EQUIVALENT === "1") {
+    assert.equal(
+      firstStep0.promptTokens,
+      100,
+      "已配预算：当量应为 100/次（quota.tool-token-cost 默认值）",
+    );
+  }
 
   // 同键重放：不得让该步用量翻倍
   const replay = await invoke(0);
