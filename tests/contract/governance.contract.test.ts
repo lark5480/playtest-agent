@@ -14,7 +14,14 @@ import { registerGovernanceContract } from "./governance.contract.js";
 
 registerGovernanceContract(() => new InMemoryGovernanceClient());
 
-for (const status of ["FAILED", "PENDING_APPROVAL", "PENDING", "REJECTED", "unknown", undefined]) {
+for (const status of [
+  "FAILED",
+  "PENDING_APPROVAL",
+  "PROCESSING",
+  "REJECTED",
+  "unknown",
+  undefined,
+]) {
   for (const replayed of [false, true]) {
     test(`HTTP 治理 ${String(status)} × replayed=${replayed} 拒绝执行且不泄露错误体`, async (t) => {
       t.mock.method(

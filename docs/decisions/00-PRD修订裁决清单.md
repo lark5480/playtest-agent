@@ -74,6 +74,10 @@
 
 **放弃了什么**：放弃了"给 aiwarden 加一个游戏 Agent 模块"——那需要改动它的公开版契约与 ADR 链。
 
+**修订（2026-11-11，裁决 37）**：边界清单中的 `/api/v1/agent/runs/{sessionKey}/resume` **从未被消费**——
+续跑实际走本地检查点 + invoke 重放（2026-11-05 的 30 步实跑即此路径），客户端没有该端点的调用代码。
+「零改动」结论不变；边界清单以裁决 37 的澄清为准。
+
 ### 6. 既有游戏零改动
 
 **结论**：被测对象只读。首个适配器打 othello-online 的本地 `preview`，
@@ -441,6 +445,23 @@ traceId 属于 session 层（`t_agent_session.trace_id`）。
 - **真实模型 60 步整局**：2026-11-06 已用 2 seeds × 10 步完成基线 / 模型同窗口对照（0 降级），链路、预算与报告均已验证。再跑整局只放大费用与随机波动，不改变任何结论。
 
 影响面：PRD §14「后续 3」标为不做、§15 列入明确不做、§16 决策 6 收敛；README「待做」改为收尾裁定；ARCHITECTURE §4 / §5 / §6 同步。代码、契约与 CI 门槛均不变。
+
+### 37. 治理客户端加固：状态码可辨、orderRef 全键哈希、用量不填 0、探活校验工具
+
+**结论**（对 aiwarden 借用面的六项加固，全部在本项目侧）：
+
+- **typed error + 有限重试**：HTTP 错误保留状态码（`GovernanceHttpError`），不再被 `catch {}` 塌缩成通用文案。409（租约在飞，服务端明示「请稍后重放」）≤3 次、间隔 500ms×attempt；429 **带** `Retry-After` ≤2 次、等待 min(header, 60)s；429 **无头** = 配额耗尽（无诚实恢复时间，aiwarden 侧亦不编造 Retry-After）→ fail-fast；403/400/5xx 不重试。`PENDING_APPROVAL` / `REJECTED` 抛 `GovernanceDeniedError`——**仍然 throw、perform=0**（冻结契约矩阵不变），报告分类为 `governance-denied`，与网络故障可辨。不接 approve/reject 自动审批（会 hollow out 治理，且触红线 2.3）。
+- **orderRef = sha256(完整幂等键).hex**（64 字符 < `t_ticket.idem_key` VARCHAR(128)）：原 `fingerprintKey(...).slice(0,128)` 是**前缀截断**，businessKey 超长时尾部 digest 被砍 → 同一步不同动作撞同一 orderRef → `ON CONFLICT DO NOTHING` **静默丢副作用**（D2 同类潜伏雷）。指纹算法（契约 ③）与键构成（契约 ⑦）**不变**，只改 orderRef 的序列化。
+- **用量硬化**：行缺字段 / 非数组响应 → 契约错误 → `unavailable(usage-query-failed)`，删除 `?? 0` 与 `?? "aiwarden"`（违反裁决 25「拿不到不填 0」与伪造归因标签）；字段存在值为 0 仍合法（未配预算当量记 0 是设计）。瞬时网络 / 5xx 继续轮询（不再一次抖动永久放弃），4xx 立即放弃；命中服务端 500 行上限时用其既有 `stepNo` 过滤补查缺失步。
+- **env 单源 + 探活校验**：构造函数直读 `AIWARDEN_BASE_URL` / `AIWARDEN_TOOL`（原先只有 CLI 读，绕过 CLI 即失效）；探活复用客户端 `listTools()` 并校验目标工具已注册，未注册降级 `tool-not-registered`（原先只看 `res.ok`，工具没注册会选中真实客户端然后每步 403）。
+- **死代码与测试枚举**：删 `result.traceId` 分支（`create_ticket` 从不返回，§6.4 已注明不适用）；契约矩阵 `"PENDING"` → `"PROCESSING"`（真实枚举，`PROCESSING`→409 才是真实在飞路径）。
+- **nightly 当量断言**：租户创建后配当月预算（`PUT /api/v1/admin/budgets/{id}`），`PLAYTEST_EXPECT_QUOTA_EQUIVALENT=1` 下断言每步 `promptTokens === 100`（aiwarden `aiwarden.quota.tool-token-cost` 默认值）；无 flag 保持 `>= 0`（本地未配预算口径不变）。此前 CI 从未断言真实当量路径。
+
+**兼容性**：闭合码兼容扩展两枚——`StepErrorCode.governance-denied`、`GovernanceDegradedReasonCode.tool-not-registered`（ARCHITECTURE §1.1 记录，`evidence.ts` 标签同步；历史报告经 `*CodeOf()` 收敛 `unknown`，裁决 35 纪律不变）。`TokenUnavailableReasonCode` **不扩**（`usage-query-failed` 注释本就含「响应无效」）。历史 `t_ticket` 行不迁移；**跨版本**旧 checkpoint 续跑认不出重放 → 重执行一次副作用（demo 项目接受；同版本崩溃续跑有回归测试）。invoke 契约（reject + perform=0 + 错误体不泄露）与「6 实跑 + 3 显式不适用」口径不变。
+
+**边界澄清（部分取代第 5 条的边界清单）**：`/api/v1/agent/runs/{sessionKey}/resume` 从未被消费，续跑 = 本地检查点 + invoke 重放；第 5 条已加修订段。aiwarden 侧本轮另有其**自身缺陷**修复（usage `from/to` 非法 → 400，原 500），不改变被消费接口形状；本项目代码仍零改动 aiwarden（红线 2.1 不变）。
+
+影响面：ARCHITECTURE §1.1 / §6、TESTING.md D2 修法与 usage 口径、README env 说明、`.github/workflows/aiwarden-nightly.yml`；新增 `tests/governance-client.test.ts`。
 
 ---
 

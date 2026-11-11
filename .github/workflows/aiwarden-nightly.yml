@@ -139,6 +139,16 @@ jobs:
           echo "AIWARDEN_TENANT_ID=$tenant_id" >> "$GITHUB_ENV"
           echo "tenant id = $tenant_id"
 
+      # 配当月预算：未配预算时工具调用当量按设计记 0，真实当量路径（100/次）就永远测不到。
+      # 配好后集成测试在 PLAYTEST_EXPECT_QUOTA_EQUIVALENT=1 下断言 promptTokens === 100。
+      - name: Configure monthly budget
+        run: |
+          curl -sf -X PUT "http://localhost:8080/api/v1/admin/budgets/$AIWARDEN_TENANT_ID" \
+            -H 'Content-Type: application/json' \
+            -H "X-Aiwarden-Tenant-Id: $AIWARDEN_TENANT_ID" \
+            -H 'X-Aiwarden-User-Id: 1' \
+            -d '{"tokenLimit":10000000}'
+
       # 强制模式：依赖不可达即失败，不允许 skip 兜绿；断言也不放宽。
       - name: Integration tests (required)
         env:
@@ -147,6 +157,8 @@ jobs:
           AIWARDEN_TOOL: create_ticket
           # /api/v1/admin/usage 要求数值主体；与工具入口的字符串主体分开。
           AIWARDEN_ADMIN_USER_ID: "1"
+          # 已配预算：断言真实配额当量（aiwarden quota.tool-token-cost 默认 100/次）。
+          PLAYTEST_EXPECT_QUOTA_EQUIVALENT: "1"
         run: npm run test:integration:aiwarden
 
       # 失败时仅收集本机启动日志（无凭证，容器口令是 compose 里的演示值）。

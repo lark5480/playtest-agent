@@ -8,10 +8,14 @@
  * 但报告里必须如实说明"这段是在降级条件下跑的"**。
  *
  * 绝不静默：若用了替身，报告的治理来源标注为 "in-memory（降级）"。
+ *
+ * 探活不仅查可达，还校验**目标工具已注册**（裁决 37）：只看 res.ok 的话，
+ * 工具没注册会选中真实客户端然后每步 403 —— 那应该在探活时就降级。
  */
 
 import { AiwardenHttpClient } from "./aiwarden-client.js";
 import { InMemoryGovernanceClient } from "./client.js";
+import { GovernanceContractError, GovernanceHttpError } from "./errors.js";
 import type { GovernanceClient, GovernanceDegradedReasonCode } from "../types/governance.js";
 
 export interface GovernanceSetup {
@@ -24,7 +28,8 @@ export interface GovernanceSetup {
 }
 
 /**
- * 探测 aiwarden 是否可达；可达则用真实客户端，否则降级到内存替身。
+ * 探测 aiwarden 是否可达且目标工具已注册；满足则用真实客户端，否则降级到内存替身。
+ * 默认地址 / 身份头 / env 兜底全部复用客户端（单一事实源，不再各写一份）。
  */
 export async function setupGovernance(options: {
   readonly baseUrl?: string;
@@ -42,40 +47,30 @@ export async function setupGovernance(options: {
   }
 
   const client = new AiwardenHttpClient(options.baseUrl ? { baseUrl: options.baseUrl } : {});
-  let httpError = false;
 
   try {
     // 探活：列出可用工具（GET /api/v1/agent/tools）。
     // 这是一次**只读**调用，不产生副作用。
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), options.probeTimeoutMs ?? 3000);
-    try {
-      const res = await fetch(
-        `${(options.baseUrl ?? "http://localhost:8080").replace(/\/+$/, "")}/api/v1/agent/tools`,
-        {
-          headers: {
-            // 租户标识必须是**数值字符串** —— aiwarden 的 tenant_id 是 long，
-            // 非数值直接被拒（HTTP 400「租户标识不是合法数值」）。
-            "X-Aiwarden-Tenant-Id": process.env.AIWARDEN_TENANT_ID ?? "1",
-            "X-Aiwarden-User-Id": process.env.AIWARDEN_USER_ID ?? "playtest-agent",
-          },
-          signal: controller.signal,
-        },
-      );
-      if (!res.ok) {
-        httpError = true;
-        throw new Error(`HTTP ${res.status}`);
-      }
-    } finally {
-      clearTimeout(timer);
+    const tools = await client.listTools(options.probeTimeoutMs ?? 3000);
+    if (!tools.includes(client.toolName)) {
+      return {
+        client: new InMemoryGovernanceClient(),
+        degraded: true,
+        reason: "tool-not-registered",
+      };
     }
-
     return { client, degraded: false };
-  } catch {
+  } catch (error) {
+    const reason: GovernanceDegradedReasonCode =
+      error instanceof GovernanceHttpError
+        ? "http-error"
+        : error instanceof GovernanceContractError
+          ? "unknown"
+          : "unreachable";
     return {
       client: new InMemoryGovernanceClient(),
       degraded: true,
-      reason: httpError ? "http-error" : "unreachable",
+      reason,
     };
   }
 }

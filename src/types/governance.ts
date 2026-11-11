@@ -18,6 +18,8 @@ export type GovernanceDegradedReasonCode =
   | "unreachable"
   /** aiwarden 探活返回 HTTP 错误。 */
   | "http-error"
+  /** aiwarden 可达但目标工具未注册。 */
+  | "tool-not-registered"
   /** 未归类的降级原因。 */
   | "unknown";
 

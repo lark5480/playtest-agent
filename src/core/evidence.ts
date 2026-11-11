@@ -28,6 +28,7 @@ export const DEGRADED_REASON_LABELS: Record<DegradedReasonCode, string> = {
 
 export const STEP_ERROR_LABELS: Record<StepErrorCode, string> = {
   "governance-error": "治理调用失败，未执行游戏动作",
+  "governance-denied": "治理拒绝执行（待审批或已驳回），未执行游戏动作",
   "game-request-failed": "游戏请求失败（网络或服务异常）",
   "game-action-unconfirmed": "动作未被确认成功，未取得后置状态",
   "replay-unobservable": "治理命中重放，但后置状态无法观察",
@@ -50,6 +51,7 @@ export const GOVERNANCE_DEGRADED_REASON_LABELS: Record<GovernanceDegradedReasonC
   "forced-in-memory": "按要求强制使用内存治理替身（--governance=in-memory）",
   unreachable: "aiwarden 不可达（网络失败或超时），已降级到内存治理替身",
   "http-error": "aiwarden 探活返回 HTTP 错误，已降级到内存治理替身",
+  "tool-not-registered": "aiwarden 可达但目标工具未注册，已降级到内存治理替身",
   unknown: "治理不可用或证据不完整，已显式降级",
 };
 
