@@ -53,18 +53,19 @@ types  ←  core  ←  adapter / strategy / oracle / governance
 裁决 30–34 将报告与模型预算检查点升级为 v2；旧数据不补造，幂等摘要算法保持不变。
 以下是 v1 时期的兼容扩展记录，不代表 v2 字段均为可选：
 
-| 契约    | 新增项                                                                          | 何时加的   | 为什么                                                                        |
-| ------- | ------------------------------------------------------------------------------- | ---------- | ----------------------------------------------------------------------------- |
-| ①       | `Decision.llmTokens` / `Decision.model`                                         | 2026-11-05 | 模型 usage 要能进入报告，不能只留在内存对象里                                 |
-| ②       | `StepRecord.llmTokens` / `model`；`GovernanceEvidence.tokenSource` 等           | 2026-11-05 | 成本来源必须可区分（模型 / 治理 / 合成 / 不可用）                             |
-| ④       | `GameAdapter.stateDigest?` / `projectAfter?`                                    | 2026-11-05 | 续跑判定需要"状态指纹 + 本地投影"；不实现的适配器照常工作                     |
-| ⑦       | `GovernanceClient.queryUsage?`；`GovernanceResult.tokenSource` 等               | 2026-11-05 | 真实成本按 session 查询；拿不到时显式 unavailable，不填 0                     |
-| ⑧       | `steps[].degradedReason`                                                        | Stage 5    | 承诺 C4 要求降级**可追溯** —— 只标 `degraded: true` 说不清为什么降级          |
-| ⑧       | `governanceSource`                                                              | Stage 5    | 区分"真实 aiwarden 链路"与"内存替身降级"，否则报告无法自证证据等级            |
-| ⑧       | `governanceDegradedReason`                                                      | Stage 5    | 同上，写明降级原因                                                            |
-| ⑧       | `steps[].traceId` / `llmTokens` / `governanceTokens` / `tokenSources` / `usage` | 2026-11-05 | v1 时点的兼容扩展；v2 已按裁决 30 升版，见 §4.1                               |
-| ④       | `GameAdapter.resume?`（可选）                                                   | Stage 4    | 续跑需要"从凭证恢复对局"；不实现该方法的适配器照常工作                        |
-| ① ② ⑦ ⑧ | 报告原因字段改为闭合原因码（`DegradedReasonCode` 等）                           | 2026-11-09 | 裁决 35：原因必须可归因，但原始错误文本与凭证仍不入报告；旧值收敛为 `unknown` |
+| 契约    | 新增项                                                                                 | 何时加的   | 为什么                                                                              |
+| ------- | -------------------------------------------------------------------------------------- | ---------- | ----------------------------------------------------------------------------------- |
+| ①       | `Decision.llmTokens` / `Decision.model`                                                | 2026-11-05 | 模型 usage 要能进入报告，不能只留在内存对象里                                       |
+| ②       | `StepRecord.llmTokens` / `model`；`GovernanceEvidence.tokenSource` 等                  | 2026-11-05 | 成本来源必须可区分（模型 / 治理 / 合成 / 不可用）                                   |
+| ④       | `GameAdapter.stateDigest?` / `projectAfter?`                                           | 2026-11-05 | 续跑判定需要"状态指纹 + 本地投影"；不实现的适配器照常工作                           |
+| ⑦       | `GovernanceClient.queryUsage?`；`GovernanceResult.tokenSource` 等                      | 2026-11-05 | 真实成本按 session 查询；拿不到时显式 unavailable，不填 0                           |
+| ⑧       | `steps[].degradedReason`                                                               | Stage 5    | 承诺 C4 要求降级**可追溯** —— 只标 `degraded: true` 说不清为什么降级                |
+| ⑧       | `governanceSource`                                                                     | Stage 5    | 区分"真实 aiwarden 链路"与"内存替身降级"，否则报告无法自证证据等级                  |
+| ⑧       | `governanceDegradedReason`                                                             | Stage 5    | 同上，写明降级原因                                                                  |
+| ⑧       | `steps[].traceId` / `llmTokens` / `governanceTokens` / `tokenSources` / `usage`        | 2026-11-05 | v1 时点的兼容扩展；v2 已按裁决 30 升版，见 §4.1                                     |
+| ④       | `GameAdapter.resume?`（可选）                                                          | Stage 4    | 续跑需要"从凭证恢复对局"；不实现该方法的适配器照常工作                              |
+| ① ② ⑦ ⑧ | 报告原因字段改为闭合原因码（`DegradedReasonCode` 等）                                  | 2026-11-09 | 裁决 35：原因必须可归因，但原始错误文本与凭证仍不入报告；旧值收敛为 `unknown`       |
+| ② ⑦     | `StepErrorCode.governance-denied` / `GovernanceDegradedReasonCode.tool-not-registered` | 2026-11-11 | 裁决 37：治理拒绝要与网络故障可辨；探活发现工具未注册要在探活时降级，而不是每步 403 |
 
 > 报告落盘同时生成 `.md` / `.json` / `.html` 三份；`.html` 是**派生的本地预览**
 > （自包含、无脚本），不属于冻结契约 ⑧ —— 契约只约束 JSON 结构。
@@ -247,10 +248,20 @@ $ AIWARDEN_BASE_URL=http://127.0.0.1:59999 npm run test:integration
 
 ### 6.4 仍然存在的边界
 
-| 项                              | 现状                                                                                                                             | 处置                                                                                                                                                |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| aiwarden 侧**没有游戏动作工具** | 实测注册的是 `assign_ticket` / `create_ticket`（`GET /api/v1/agent/tools`）。aiwarden PRD §10 明说「工单是零资金风险的演示替身」 | 本项目用 `create_ticket` 作**替身**验证整条管道（幂等 / 配额 / 审计 / 补偿全部生效）。**不改 aiwarden**；若将来要真游戏动作工具，需 aiwarden 侧注册 |
-| 单次调用无 traceId              | `ToolInvokeResponse` 无该字段；traceId 在 session 层（`t_agent_session.trace_id`）                                               | 治理契约中该条标 `inMemoryOnly: true`，对真实实现**显式跳过并注明原因**（不是删断言）                                                               |
-| 真实链路的**续跑**              | 2026-11-05 已实跑 30 步、`replayed 1`；必须同 tenant / session / businessKey                                                     | 检查点保留 token；恢复不了显式失败，不自动新开一局                                                                                                  |
-| 成本口径                        | LLM usage 是模型 token；aiwarden `t_llm_call_log` 里工具调用的 `prompt_tokens` 是**配额当量**（默认 100/次），不是模型 token     | 报告分 `llmTokens` / `governanceTokens` / `tokenSources`，不合成一个冒充真实成本的 total；拿不到标 `unavailable`                                    |
-| 真实模型                        | OpenAI 兼容客户端已实现；2026-11-05 已实跑 5 步（0 降级）；60 步整局不做（裁决 36）                                              | 无 key 时显式降级；`reasoning_content` 已兼容；仓库不保存密钥                                                                                       |
+| 项                              | 现状                                                                                                                                                                      | 处置                                                                                                                                                |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| aiwarden 侧**没有游戏动作工具** | 实测注册的是 `assign_ticket` / `create_ticket`（`GET /api/v1/agent/tools`）。aiwarden PRD §10 明说「工单是零资金风险的演示替身」                                          | 本项目用 `create_ticket` 作**替身**验证整条管道（幂等 / 配额 / 审计 / 补偿全部生效）。**不改 aiwarden**；若将来要真游戏动作工具，需 aiwarden 侧注册 |
+| 单次调用无 traceId              | `ToolInvokeResponse` 无该字段；traceId 在 session 层（`t_agent_session.trace_id`）                                                                                        | 治理契约中该条标 `inMemoryOnly: true`，对真实实现**显式跳过并注明原因**（不是删断言）                                                               |
+| 真实链路的**续跑**              | 2026-11-05 已实跑 30 步、`replayed 1`；必须同 tenant / session / businessKey；走本地检查点 + invoke 重放，**不经 `/agent/runs/{sessionKey}/resume` 端点**（裁决 37 澄清） | 检查点保留 token；恢复不了显式失败，不自动新开一局                                                                                                  |
+| 成本口径                        | LLM usage 是模型 token；aiwarden `t_llm_call_log` 里工具调用的 `prompt_tokens` 是**配额当量**（默认 100/次），不是模型 token                                              | 报告分 `llmTokens` / `governanceTokens` / `tokenSources`，不合成一个冒充真实成本的 total；拿不到标 `unavailable`                                    |
+| 真实模型                        | OpenAI 兼容客户端已实现；2026-11-05 已实跑 5 步（0 降级）；60 步整局不做（裁决 36）                                                                                       | 无 key 时显式降级；`reasoning_content` 已兼容；仓库不保存密钥                                                                                       |
+
+### 6.5 客户端加固（2026-11-11，裁决 37）
+
+> 本节是 2026-11-11 的口径更新；§6.1–6.4 的历史记录保留为时点证据。
+
+- **状态码可辨 + 有限重试**：HTTP 错误不再塌缩成通用文案（`GovernanceHttpError` 保留 status）；409（租约在飞）≤3 次重试、429 带 `Retry-After` ≤2 次退避；429 无头 = 配额耗尽 → fail-fast（aiwarden 侧不编造 Retry-After）。`PENDING_APPROVAL` / `REJECTED` 仍 throw（冻结矩阵不变），报告落 `governance-denied`，与网络故障可辨。
+- **orderRef = sha256(完整幂等键)**：D2 的修法升级为定长哈希——原前缀截断 `slice(0,128)` 在长 businessKey 下砍掉尾部 digest，同一步不同动作会撞键（D2 同类潜伏雷）。契约 ③ / ⑦ 不变。
+- **用量不填 0 / 不伪造标签**：行缺字段、非数组响应 → 契约错误 → `unavailable(usage-query-failed)`；瞬时网络 / 5xx 继续轮询，4xx 立即放弃；命中服务端 500 行上限用 `stepNo` 过滤补查缺失步。
+- **探活校验工具注册**：只看 `res.ok` 不够——工具未注册会在探活时降级 `tool-not-registered`，而不是选中真实客户端后每步 403。env（`AIWARDEN_BASE_URL` / `AIWARDEN_TOOL`）由客户端构造函数直读，默认地址单一事实源。
+- **验证**：`tests/governance-client.test.ts` 24 条单测（mock fetch）+ 冻结契约套件原样通过 + nightly 配预算断言 100/次当量。

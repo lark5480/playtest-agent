@@ -342,6 +342,10 @@ PLAYTEST_REQUIRE_INTEGRATION=1 npm run test:integration:games
 PLAYTEST_REQUIRE_INTEGRATION=1 AIWARDEN_ADMIN_USER_ID=1 npm run test:integration:aiwarden
 ```
 
+`AIWARDEN_BASE_URL` / `AIWARDEN_TOOL` / `AIWARDEN_TENANT_ID` / `AIWARDEN_USER_ID` / `AIWARDEN_ADMIN_USER_ID`
+由客户端构造函数直读（声明见 `.env.example`），绕过 CLI 直接 `new AiwardenHttpClient()` 也生效。
+nightly 流水线会先配当月预算，并在 `PLAYTEST_EXPECT_QUOTA_EQUIVALENT=1` 下断言 100/次的真实配额当量。
+
 CI 侧相关 job：
 
 | job                    | 内容                                                                                                                        | 超时    |
